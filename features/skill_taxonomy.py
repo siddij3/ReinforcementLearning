@@ -1,21 +1,5 @@
 """
-skill_taxonomy_scorer.py
-
-Replaces the keyword-matching SkillTaxonomyCompletenessScorer with one
-backed by Nashhz/SBERT_KFOLD_JobDescriptions_Skills_UserPortfolios —
-a sentence transformer fine-tuned specifically on job descriptions,
-skill lists, and candidate portfolios.
-
-Why this model is better than TF-IDF keyword matching
-──────────────────────────────────────────────────────
-The old scorer required a hardcoded taxonomy dict and exact string matches.
-This model understands that "built real-time pipelines with Kafka" and
-"Apache Kafka" are the same skill, that "orchestrated workflows with
-Airflow" maps to the JD requirement "pipeline orchestration", and that
-"PyTorch" and "deep learning frameworks" are semantically related.
-
-Fraud signals this enables that keyword matching cannot
-──────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────
 1. Coverage uniformity (the "LLM normal curve")
    A fraudster's profile covers ALL JD requirements at suspiciously
    similar similarity scores (uniform distribution).
@@ -28,7 +12,25 @@ Fraud signals this enables that keyword matching cannot
    semantic content. A genuine profile has high similarity on a subset
    of requirements PLUS a cluster of skills that point away from the JD.
 
+3. Idiosyncrasy (the "off-JD experience signal")
+    A fabricated profile has no skills that fall outside the JD's scope —
+    it was generated to match the JD, so it has no independent texture.
+    A genuine profile includes some skills that don't closely match any
+    JD requirement, reflecting real experience beyond the JD's narrow ask.
+_________________________________________________________
+    Distinguishes between two legitimate reasons a profile might
+    closely match a job description:
 
+      Type A — Fabrication: profile was generated/invented to mirror JD.
+               High alignment + shallow substance + no independent texture.
+
+      Type B — Genuine tailoring: real experience reframed in JD vocabulary.
+               High alignment + operational depth + idiosyncratic evidence
+               outside the JD's scope.
+
+    The fraud signal is only escalated when HIGH ALIGNMENT co-occurs with
+    LOW SUBSTANCE. High alignment with high substance is a well-qualified
+    candidate who did their homework — not a fraud signal.
 """
 
 import re
