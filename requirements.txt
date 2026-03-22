@@ -1,0 +1,14 @@
+gymnasium
+# swig
+# gymnasium[box2d]
+cleanrl[atari]
+tyro
+tensorflow-cpu
+torch>=1.9.0
+tensorboard>=2.5.0
+wandb
+stable_baselines3
+scikit-learn
+scipy
+transformers
+sentence-transformers
