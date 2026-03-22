@@ -120,14 +120,7 @@ class AnswerPerplexityScorer:
         # domain-specific terms, names, errors
         low_prob_frac = np.mean(lps_arr < -5.0)
 
-        # Fraud signal: low CV, high high_prob_frac, low low_prob_frac → LLM
-        fraud_signal = float(np.clip(
-            - 0.50 * cv                   # high burstiness reduces fraud
-            + 0.30 * high_prob_frac       # smooth tokens increase fraud
-            + 0.20 * low_prob_frac        # surprising tokens reduce fraud
-            + 0.50,                       # baseline offset
-            0.0, 1.0
-        ))
+
 
         perplexity_signal = 1.0 - np.clip(normalized, 0.0, 1.0)  # invert: low ppl → high fraud signal
 
@@ -135,41 +128,9 @@ class AnswerPerplexityScorer:
             "answer_perplexity_score": round(perplexity_signal, 4),
             "raw_perplexity":          round(raw_ppl, 2),
             "conditioned_perplexity":  round(conditioned_ppl, 2),
-            # "interpretation":          self._interpret(perplexity_signal),
-
-            # "token_burstiness_fraud_score": round(fraud_signal, 4),
             "mean_log_prob":                round(float(mean_lp), 4),
             "log_prob_cv":                  round(float(cv), 4),
             "high_prob_token_fraction":     round(float(high_prob_frac), 4),
             "low_prob_token_fraction":      round(float(low_prob_frac), 4),
         }
 
-
-
-# ── Usage ─────────────────────────────────────────────────────────
-# scorer = AnswerPerplexityScorer()
-
-# # # LLM-generated: smooth, structured, predictable
-# # llm_answer = """
-# # To address the Kafka consumer group rebalancing issue, I implemented
-# # a partition assignment strategy using the CooperativeStickyAssignor,
-# # which minimizes unnecessary partition movements during rebalances.
-# # Additionally, I tuned the session.timeout.ms and
-# # max.poll.interval.ms configurations to balance between
-# # fault detection and processing stability.
-# # """
-
-# # # Human answer: messier, more specific, idiosyncratic
-# # human_answer = """
-# # Yeah so we had this nightmare where the rebalance kept triggering 
-# # mid-batch — turned out max.poll.interval.ms was set to 5 minutes 
-# # but our batch jobs occasionally took 6. Mike found it by diffing 
-# # the consumer group describe output between deploys. We just bumped 
-# # it to 10 and added a metric to alert if processing time crossed 7.
-# # """
-
-# # q = "Describe a time you debugged a Kafka consumer issue in production."
-# # print(scorer.score(llm_answer, q))
-# # # {'answer_perplexity_score': 0.81, 'raw_perplexity': 42.3, ...}
-# # print(scorer.score(human_answer, q))
-# # # {'answer_perplexity_score': 0.22, 'raw_perplexity': 134.7, ...}
