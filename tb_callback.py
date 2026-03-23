@@ -1,134 +1,147 @@
-"""
-tb_callback.py
-Custom TensorBoard callback for the fraud-detection PPO agent.
-
-Logs everything SB3 doesn't log by default:
-  fraud/precision          — rolling true-positive rate
-  fraud/recall             — rolling true-negative rate
-  fraud/f1                 — harmonic mean of precision & recall
-  fraud/false_positive_rate
-  fraud/false_negative_rate
-  actions/probe_rate       — fraction of PROBE actions
-  actions/flag_rate        — fraction of FLAG actions
-  actions/pass_rate        — fraction of PASS actions
-  episode/mean_reward      — explicit redundant log (useful for grouping)
-  episode/mean_length
-"""
-
 from collections import deque
-import numpy as np
+from typing import Optional
+
 from stable_baselines3.common.callbacks import BaseCallback
 
 
 class FraudTensorboardCallback(BaseCallback):
     """
-    Writes fraud-detection metrics into SB3's existing TensorBoard writer
-    so everything appears in the same run directory, in the same session.
+    Tracks fraud-detection outcomes in a rolling deque and writes
+    precision / recall / F1 / action-rate metrics to TensorBoard.
 
     Parameters
     ----------
     window : int
-        Number of recent episodes used for rolling metric calculation.
+        Number of *episode-terminal* steps to keep in the rolling window.
+        Each terminal step contributes one outcome ("tp", "fp", "tn", "fn").
     verbose : int
-        0 = silent, 1 = print metric summary every log step.
+        0 = silent; 1 = print a summary line each time metrics are flushed.
     """
 
-    def __init__(self, window: int = 100, verbose: int = 0):
+    def __init__(self, window: int = 100, verbose: int = 1):
+        # Must call super().__init__(verbose) — SB3 uses verbose internally.
         super().__init__(verbose)
         self.window = window
 
-        # ── Rolling episode buffers ───────────────────────────────
-        self._rewards = deque(maxlen=window)
-        self._lengths = deque(maxlen=window)
+        # Rolling window of terminal outcomes across ALL parallel envs.
+        # Each entry is one of: "tp", "fp", "tn", "fn"
+        self._outcomes: deque = deque(maxlen=window)
 
-        # Outcome counts  (tp / fp / fn / tn)
-        self._tp = deque(maxlen=window)
-        self._fp = deque(maxlen=window)
-        self._fn = deque(maxlen=window)
-        self._tn = deque(maxlen=window)
+        # Rolling window of stages at which episodes ended.
+        self._stages: deque = deque(maxlen=window)
 
-        # Action counts per step
-        self._n_probe = deque(maxlen=window * 10)
-        self._n_flag  = deque(maxlen=window * 10)
-        self._n_pass  = deque(maxlen=window * 10)
+        # Counters reset each rollout (for per-rollout action-rate logging)
+        self._rollout_actions = {"probe": 0, "flag": 0, "pass": 0}
+        self._rollout_steps   = 0
 
-    # ── SB3 hook: called after every env.step() ───────────────────
+    # ── Lifecycle hooks ───────────────────────────────────────────────────────
+
+    def _on_training_start(self) -> None:
+        """Called once before the first rollout. Used to log the graph or
+        hyperparameters — left minimal here."""
+        if self.verbose:
+            print(f"[FraudCB] Training start — rolling window = {self.window}")
+
+    def _on_rollout_start(self) -> None:
+        """Reset per-rollout action counters so we can log action rates per
+        rollout rather than globally."""
+        self._rollout_actions = {"probe": 0, "flag": 0, "pass": 0}
+        self._rollout_steps   = 0
+
     def _on_step(self) -> bool:
+        """
+        Called by SB3 after EVERY environment step (across all n_envs in
+        parallel).  `self.locals` contains:
+            "actions"  : np.ndarray shape (n_envs,) — the actions just taken
+            "infos"    : list[dict]                  — one dict per env
 
-        # ── 1. Episode completions ────────────────────────────────
-        infos = self.locals.get("infos", [])
-        dones = self.locals.get("dones", [])
+        We inspect every info dict; only terminal steps carry an outcome.
+        Return True to continue training; False would abort training early.
+        """
+        actions = self.locals["actions"]   # shape (n_envs,)
+        infos   = self.locals["infos"]     # list of dicts, one per env
 
-        for info, done in zip(infos, dones):
-            if not done:
-                continue
+        for action, info in zip(actions, infos):
+            # --- Track action distribution for this rollout ----------------
+            self._rollout_steps += 1
+            if   action == 0: self._rollout_actions["probe"] += 1
+            elif action == 1: self._rollout_actions["flag"]  += 1
+            elif action == 2: self._rollout_actions["pass"]  += 1
 
-            # Episode reward / length via Monitor wrapper
-            ep = info.get("episode")
-            if ep:
-                self._rewards.append(ep["r"])
-                self._lengths.append(ep["l"])
+            # --- Collect outcome only from terminal steps ------------------
+            outcome = info.get("outcome")   # None on PROBE steps
+            if outcome is not None:
+                self._outcomes.append(outcome)
+                self._stages.append(info.get("stage", 0))
 
-            # Fraud outcome — emitted by CandidateEnv.step()
-            outcome = info.get("outcome")
-            self._tp.append(1 if outcome == "tp" else 0)
-            self._fp.append(1 if outcome == "fp" else 0)
-            self._fn.append(1 if outcome == "fn" else 0)
-            self._tn.append(1 if outcome == "tn" else 0)
+        return True   # returning False would stop training
 
-        # ── 2. Action distribution ────────────────────────────────
-        actions = self.locals.get("actions", [])
-        for a in np.array(actions).flatten():
-            self._n_probe.append(1 if a == 0 else 0)
-            self._n_flag.append( 1 if a == 1 else 0)
-            self._n_pass.append( 1 if a == 2 else 0)
+    def _on_rollout_end(self) -> None:
+        """
+        Called once the rollout buffer is full, just before PPO updates.
+        This is the right place to flush metrics: all n_steps × n_envs
+        transitions for this rollout have already passed through _on_step().
 
-        # ── 3. Write to TensorBoard every n_steps (one rollout) ──
-        #    self.num_timesteps is updated by SB3 before _on_step
-        n = self.model.n_steps * self.model.n_envs   # steps per rollout
-        if self.num_timesteps % n != 0:
-            return True
+        We compute and log:
+          Outcome counts   : tp, fp, tn, fn (rolling window)
+          Precision        : tp / (tp + fp)   — of flagged, how many real fraud
+          Recall           : tp / (tp + fn)   — of all fraud, how many caught
+          F1               : harmonic mean of precision + recall
+          Action rates     : fraction of steps that were probe/flag/pass
+          Mean stage       : average stage at episode end (how deeply we probed)
+        """
+        if not self._outcomes:
+            return   # nothing logged yet
 
-        step = self.num_timesteps
+        # ── Outcome counts from the rolling window ────────────────────────
+        tp = self._outcomes.count("tp")
+        fp = self._outcomes.count("fp")
+        tn = self._outcomes.count("tn")
+        fn = self._outcomes.count("fn")
+        total_terminal = tp + fp + tn + fn
 
-        # ── Episode metrics ───────────────────────────────────────
-        if self._rewards:
-            self.logger.record("episode/mean_reward", np.mean(self._rewards))
-            self.logger.record("episode/mean_length", np.mean(self._lengths))
+        # ── Classification metrics ────────────────────────────────────────
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1        = (2 * precision * recall / (precision + recall)
+                     if (precision + recall) > 0 else 0.0)
+        fpr       = fp / (fp + tn) if (fp + tn) > 0 else 0.0   # false positive rate
+        accuracy  = (tp + tn) / total_terminal if total_terminal > 0 else 0.0
 
-        # ── Fraud metrics ─────────────────────────────────────────
-        tp = sum(self._tp);  fp = sum(self._fp)
-        fn = sum(self._fn);  tn = sum(self._tn)
+        # ── Action rates for this rollout ─────────────────────────────────
+        n = max(self._rollout_steps, 1)
+        probe_rate = self._rollout_actions["probe"] / n
+        flag_rate  = self._rollout_actions["flag"]  / n
+        pass_rate  = self._rollout_actions["pass"]  / n
 
-        precision = tp / max(tp + fp, 1)
-        recall    = tp / max(tp + fn, 1)
-        fpr       = fp / max(fp + tn, 1)
-        fnr       = fn / max(fn + tp, 1)
-        f1        = (2 * precision * recall) / max(precision + recall, 1e-8)
+        # ── Mean decision stage ───────────────────────────────────────────
+        mean_stage = (sum(self._stages) / len(self._stages)
+                      if self._stages else 0.0)
 
-        self.logger.record("fraud/precision",           precision)
-        self.logger.record("fraud/recall",              recall)
-        self.logger.record("fraud/f1",                  f1)
-        self.logger.record("fraud/false_positive_rate", fpr)
-        self.logger.record("fraud/false_negative_rate", fnr)
+        # ── Write to TensorBoard via SB3's logger ─────────────────────────
+        # self.logger.record() buffers values; SB3 calls logger.dump()
+        # after this hook, so everything appears in the same TensorBoard step.
+        self.logger.record("fraud/precision",   precision)
+        self.logger.record("fraud/recall",      recall)
+        self.logger.record("fraud/f1",          f1)
+        self.logger.record("fraud/fpr",         fpr)
+        self.logger.record("fraud/accuracy",    accuracy)
 
-        # ── Action distribution ───────────────────────────────────
-        total = max(sum(self._n_probe) + sum(self._n_flag) + sum(self._n_pass), 1)
-        self.logger.record("actions/probe_rate", sum(self._n_probe) / total)
-        self.logger.record("actions/flag_rate",  sum(self._n_flag)  / total)
-        self.logger.record("actions/pass_rate",  sum(self._n_pass)  / total)
+        self.logger.record("fraud/tp",  tp)
+        self.logger.record("fraud/fp",  fp)
+        self.logger.record("fraud/tn",  tn)
+        self.logger.record("fraud/fn",  fn)
 
-        # Flush writes the scalars to disk immediately
-        self.logger.dump(step)
+        self.logger.record("actions/probe_rate", probe_rate)
+        self.logger.record("actions/flag_rate",  flag_rate)
+        self.logger.record("actions/pass_rate",  pass_rate)
+        self.logger.record("actions/mean_stage", mean_stage)
 
         if self.verbose:
+            step = self.num_timesteps
             print(
-                f"[TB] step={step:>8,} | "
-                f"reward={np.mean(self._rewards) if self._rewards else 0:.3f} | "
-                f"prec={precision:.3f}  rec={recall:.3f}  f1={f1:.3f} | "
-                f"probe={sum(self._n_probe)/total:.2f}  "
-                f"flag={sum(self._n_flag)/total:.2f}  "
-                f"pass={sum(self._n_pass)/total:.2f}"
+                f"[FraudCB] step={step:>8,}  "
+                f"P={precision:.3f}  R={recall:.3f}  F1={f1:.3f}  "
+                f"FPR={fpr:.3f}  probe={probe_rate:.2f}  "
+                f"stage={mean_stage:.2f}"
             )
-
-        return True

@@ -50,7 +50,6 @@ class SkillTaxonomyResult:
     unmatched_requirements:   List[str]  # JD reqs with no strong profile match
     independent_skills:       List[str]  # profile skills outside JD scope
     similarity_distribution:  dict       # stats on the similarity score distribution
-    classification:           str        # "fabricated" | "tailored" | "genuine" | "weak"
 
 
 # ── Main scorer ───────────────────────────────────────────────────────────────
@@ -95,6 +94,11 @@ class SkillTaxonomyScorer:
     ):
         self.match_threshold        = match_threshold
         self.strong_match_threshold = strong_match_threshold
+        try:
+            from .hub_auth import ensure_hf_token_for_downloads
+        except ImportError:
+            from hub_auth import ensure_hf_token_for_downloads
+        ensure_hf_token_for_downloads()
         self.model = SentenceTransformer("Nashhz/SBERT_KFOLD_JobDescriptions_Skills_UserPortfolios")
 
         self.profile_text = profile_text
@@ -131,6 +135,7 @@ class SkillTaxonomyScorer:
         profile_embs = model.encode(profile_skills,    normalize_embeddings=True)
         jd_embs      = model.encode(jd_requirements,   normalize_embeddings=True)
 
+        print(profile_embs.shape, jd_embs.shape)
         # similarity[i, j] = similarity between profile_skills[i] and jd_requirements[j]
         # Shape: (n_profile_skills, n_jd_requirements)
         sim_matrix = model.similarity(profile_embs, jd_embs).numpy()
@@ -165,28 +170,6 @@ class SkillTaxonomyScorer:
             ),
         }
 
-        # ── Composite fraud signal ────────────────────────────────
-        #
-        # Fraud indicators (increase signal):
-        #   high coverage_uniformity  — suspiciously even coverage of all JD reqs
-        #   high mirror_score         — profile just paraphrases JD
-        #   low idiosyncrasy          — no skills outside JD scope
-        #
-        # Genuine indicators (decrease signal):
-        #   high idiosyncrasy         — real skills beyond what JD asked for
-        #   low sim_dist["cv"]        — all areas matched equally is suspicious
-        #                               but caught by uniformity already
-        #
-        # fraud_signal = float(np.clip(
-        #   + 0.40 * mirror_score
-        #   + 0.40 * (1.0 - idiosyncrasy)    # low idiosyncrasy → fraud
-        #   + 0.20 * coverage,               # very high coverage is mildly suspicious
-        #     0.0, 1.0
-        # ))
-
-        classification = self._classify(
-            coverage, idiosyncrasy, mirror_score
-        )
 
         return SkillTaxonomyResult(
             # fraud_signal             = round(fraud_signal, 4),
@@ -197,7 +180,6 @@ class SkillTaxonomyScorer:
             unmatched_requirements   = unmatched,
             independent_skills       = independent_skills,
             similarity_distribution  = sim_dist,
-            classification           = classification,
         )
 
     # ── Signal implementations ────────────────────────────────────────────────
@@ -241,8 +223,6 @@ class SkillTaxonomyScorer:
                     "requirement":     req,
                     "matched_skill":   profile_skills[best_idx],
                     "similarity":      round(best_sim, 4),
-                    "strength":        "strong" if best_sim >= self.strong_match_threshold
-                                       else "moderate",
                 })
             else:
                 unmatched.append(req)
@@ -322,31 +302,6 @@ class SkillTaxonomyScorer:
         normalized = np.clip((mirror_score - 0.5) / 0.45, 0.0, 1.0)
         return float(normalized)
 
-    # ── Classification ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _classify(
-        coverage:     float,
-        idiosyncrasy: float,
-        mirror:       float,
-    ) -> str:
-        """
-        Four-quadrant classification using the most discriminating signals.
-
-               High uniformity        Low uniformity
-               ┌───────────────────┬──────────────────┐
-        Low    │   fabricated       │    weak_fit      │
-        idiosy │  (JD mirror, no    │  (partial match, │
-               │   own experience)  │   no depth)      │
-               ├───────────────────┼──────────────────┤
-        High   │   tailored         │    genuine       │
-        idiosy │  (JD-optimized +   │  (real exp, not  │
-               │   own experience)  │   JD-optimized)  │
-               └───────────────────┴──────────────────┘
-        """
-
-        return idiosyncrasy, mirror, coverage
-
 
 # ── Skill / requirement extractor ────────────────────────────────────────────
 
@@ -370,111 +325,71 @@ class SkillTaxonomyScorer:
 
         return results
 
-class SkillExtractor:
-    """
-    Converts raw profile text and JD text into lists of skill/requirement
-    strings that the scorer can embed.
+# # ── Usage ─────────────────────────────────────────────────────────────────────
 
-    Strategy: split on bullet points, newlines, and semicolons, then
-    filter to segments that contain actionable skill content.
-    This gives the model short, focused strings to embed rather than
-    long paragraphs — the model was trained on skill-length phrases.
-    """
+# if __name__ == "__main__":
+#     jd = """
+#     We are looking for a Senior ML Platform Engineer.
+#     Requirements:
+#     - Experience with feature stores such as Feast or Tecton
+#     - Model serving with Triton Inference Server or TorchServe
+#     - MLflow or Weights & Biases for experiment tracking
+#     - Kubeflow or Airflow for pipeline orchestration
+#     - Fine-tuning large language models using LoRA or RLHF techniques
+#     - Strong Kubernetes and distributed systems background
+#     - Real-time streaming experience with Kafka or Flink
+#     """
 
+#     # Case 1: Fabricated — mirrors JD exactly, no independent skills
+#     fabricated_profile = """
+#     Senior ML Platform Engineer with expertise in:
+#     - Feature store implementation using Feast and Tecton
+#     - Real-time model serving via Triton Inference Server
+#     - Experiment tracking with MLflow and Weights & Biases
+#     - Pipeline orchestration using Kubeflow and Airflow
+#     - LLM fine-tuning with LoRA and RLHF techniques
+#     - Kubernetes cluster management and distributed systems
+#     - Real-time streaming with Kafka and Flink
+#     """
 
+#     # Case 2: Genuine — strong in some areas, uses different tools in others
+#     genuine_profile = """
+#     ML infrastructure engineer, 4 years building model serving systems.
+#     Deep experience with Kafka consumer pipelines and Spark for batch ETL.
+#     Built our internal feature platform on Redis and Postgres before Feast
+#     was production-ready — evaluated Feast 0.28, ran into silent partition
+#     drops on schema changes, decided to wait.
+#     Run inference through TorchServe; Triton was overkill for our model sizes.
+#     Airflow for all orchestration — we use a mono-DAG pattern.
+#     Some LoRA fine-tuning on an internal NER model last quarter.
+#     Strong Python, SQL. Haven't used Kubeflow or RLHF in production.
+#     """
 
-
-
-# ── Integration helper ────────────────────────────────────────────────────────
-
-def score_from_text(
-    profile_text: str,
-    jd_text:      str,
-    match_threshold:        float = 0.55,
-    strong_match_threshold: float = 0.72,
-) -> SkillTaxonomyResult:
-    """
-    Convenience wrapper: takes raw text strings, extracts skills/requirements,
-    runs the scorer, and returns the result.
-
-    This is the function to call from CandidateEnv or a pipeline.
-    """
-    extractor = SkillExtractor()
- 
-    profile_skills   = extractor.extract_profile_skills(profile_text)
-    jd_requirements  = extractor.extract_jd_requirements(jd_text)
-
-    return scorer.score(profile_skills, jd_requirements, profile_text)
-
-
-# ── Usage ─────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    jd = """
-    We are looking for a Senior ML Platform Engineer.
-    Requirements:
-    - Experience with feature stores such as Feast or Tecton
-    - Model serving with Triton Inference Server or TorchServe
-    - MLflow or Weights & Biases for experiment tracking
-    - Kubeflow or Airflow for pipeline orchestration
-    - Fine-tuning large language models using LoRA or RLHF techniques
-    - Strong Kubernetes and distributed systems background
-    - Real-time streaming experience with Kafka or Flink
-    """
-
-    # Case 1: Fabricated — mirrors JD exactly, no independent skills
-    fabricated_profile = """
-    Senior ML Platform Engineer with expertise in:
-    - Feature store implementation using Feast and Tecton
-    - Real-time model serving via Triton Inference Server
-    - Experiment tracking with MLflow and Weights & Biases
-    - Pipeline orchestration using Kubeflow and Airflow
-    - LLM fine-tuning with LoRA and RLHF techniques
-    - Kubernetes cluster management and distributed systems
-    - Real-time streaming with Kafka and Flink
-    """
-
-    # Case 2: Genuine — strong in some areas, uses different tools in others
-    genuine_profile = """
-    ML infrastructure engineer, 4 years building model serving systems.
-    Deep experience with Kafka consumer pipelines and Spark for batch ETL.
-    Built our internal feature platform on Redis and Postgres before Feast
-    was production-ready — evaluated Feast 0.28, ran into silent partition
-    drops on schema changes, decided to wait.
-    Run inference through TorchServe; Triton was overkill for our model sizes.
-    Airflow for all orchestration — we use a mono-DAG pattern.
-    Some LoRA fine-tuning on an internal NER model last quarter.
-    Strong Python, SQL. Haven't used Kubeflow or RLHF in production.
-    """
-
-    # Case 3: Tailored — genuine experience rewritten in JD language
-    tailored_profile = """
-    Senior ML platform engineer with hands-on experience in feature store
-    design (built a custom store; evaluating Feast for migration), model
-    serving infrastructure (TorchServe in production, familiar with Triton),
-    pipeline orchestration (Airflow, exploring Kubeflow), and LLM fine-tuning
-    (LoRA adapters on internal classification models).
-    Additional: Redis caching layer, Spark batch processing, custom Kafka
-    consumers for real-time feature computation, Prometheus + Grafana.
-    """
-
-    
+#     # Case 3: Tailored — genuine experience rewritten in JD language
+#     tailored_profile = """
+#     Senior ML platform engineer with hands-on experience in feature store
+#     design (built a custom store; evaluating Feast for migration), model
+#     serving infrastructure (TorchServe in production, familiar with Triton),
+#     pipeline orchestration (Airflow, exploring Kubeflow), and LLM fine-tuning
+#     (LoRA adapters on internal classification models).
+#     Additional: Redis caching layer, Spark batch processing, custom Kafka
+#     consumers for real-time feature computation, Prometheus + Grafana.
+#     """
 
 
-    for label, profile in [
-        ("Fabricated",         fabricated_profile),
-        ("Genuine",            genuine_profile),
-        ("Tailored (genuine)", tailored_profile),
-    ]:
-        result = scorer    = SkillTaxonomyScorer(0.55, 0.72, profile, jd).score()
-        print(f"\n{'='*58}")
-        print(f"  {label}")
-        print(f"{'='*58}")
-        # print(f"  fraud_signal:          {result.fraud_signal}")
-        print(f"  classification:        {result.classification}")
-        print(f"  coverage_score:        {result.coverage_score}")
-        print(f"  idiosyncrasy_score:    {result.idiosyncrasy_score}  ← high = genuine off-JD experience")
-        print(f"  semantic_mirror_score: {result.semantic_mirror_score}  ← high = profile paraphrases JD")
-        print(f"  sim distribution:      {result.similarity_distribution}")
-        print(f"  unmatched reqs:        {result.unmatched_requirements[:2]}")
-        print(f"  independent skills:    {result.independent_skills[:3]}")
+
+#     for label, profile in [
+#         ("Fabricated",         fabricated_profile),
+#         ("Genuine",            genuine_profile),
+#         ("Tailored (genuine)", tailored_profile),
+#     ]:
+#         result = scorer    = SkillTaxonomyScorer(0.55, 0.72, profile, jd).score()
+#         print(f"\n{'='*58}")
+#         print(f"  {label}")
+#         print(f"{'='*58}")
+#         # print(f"  fraud_signal:          {result.fraud_signal}")
+#         print(f"  coverage_score:        {result.coverage_score}")
+#         print(f"  idiosyncrasy_score:    {result.idiosyncrasy_score}  ← high = genuine off-JD experience")
+#         print(f"  semantic_mirror_score: {result.semantic_mirror_score}  ← high = profile paraphrases JD")
+#         print(f"  sim distribution:      {result.similarity_distribution}")
+#         print(f"  unmatched reqs:        {result.unmatched_requirements[:2]}")

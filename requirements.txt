@@ -12,3 +12,5 @@ scikit-learn
 scipy
 transformers
 sentence-transformers
+numpy
+python-dotenv>=1.0.0

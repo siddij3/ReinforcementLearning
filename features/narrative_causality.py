@@ -42,6 +42,11 @@ def _load(key: str):
     """Loads a model once and caches it. Call only when needed."""
     if key in _MODELS:
         return _MODELS[key]
+    try:
+        from .hub_auth import ensure_hf_token_for_downloads
+    except ImportError:
+        from hub_auth import ensure_hf_token_for_downloads
+    ensure_hf_token_for_downloads()
 
     from transformers import pipeline
 
@@ -74,7 +79,7 @@ def _load(key: str):
 
 @dataclass
 class CausalityResult:
-    # fraud_signal:           float   # 0 = rich narrative, 1 = keyword list
+    fraud_signal:           float   # 0 = rich narrative, 1 = keyword list
     causal_span_score:      float   # density of detected cause/effect spans
     situation_score:        float   # zero-shot: describes a specific situation
     specificity_score:      float   # zero-shot: concrete vs. vague language
@@ -136,17 +141,10 @@ class NarrativeCausalityScorer:
 
         # ── Signal 1: Causal span detection (UniCausal) ───────────
         causal_score, causal_detail = self._causal_span_score(answer)
-
-        # ── Signal 2: Situation specificity (DeBERTa zero-shot) ───
-        situation_score, situation_detail = self._situation_score(sentences)
-
-        # ── Signal 3: Language specificity (DeBERTa zero-shot) ────
-        specificity_score, specificity_detail = self._specificity_score(sentences)
-
-        # ── Signal 4: Result entity detection (NER) ───────────────
+        # ── Signal 2: Result entity detection (NER) ───────────────
         result_score, ner_detail = self._result_entity_score(answer)
 
-        # ── Signal 5: Coherence / mismatch (NLI) ─────────────────
+        # ── Signal 3: Coherence / mismatch (NLI) ─────────────────
         coherence_score, nli_detail = self._coherence_score(sentences)
 
         # ── Composite fraud signal ────────────────────────────────
@@ -172,14 +170,10 @@ class NarrativeCausalityScorer:
 
         return CausalityResult(
             causal_span_score     = round(causal_score, 4),
-            situation_score       = round(situation_score, 4),
-            specificity_score     = round(specificity_score, 4),
             result_entity_score   = round(result_score, 4),
             coherence_score       = round(coherence_score, 4),
             detail = {
                 "causal":     causal_detail,
-                "situation":  situation_detail,
-                "specificity":specificity_detail,
                 "ner":        ner_detail,
                 "nli":        nli_detail,
             },

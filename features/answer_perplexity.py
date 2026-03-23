@@ -11,6 +11,11 @@ class AnswerPerplexityScorer:
     """
 
     def __init__(self, model_name: str = "distilgpt2"):
+        try:
+            from .hub_auth import ensure_hf_token_for_downloads
+        except ImportError:
+            from hub_auth import ensure_hf_token_for_downloads
+        ensure_hf_token_for_downloads()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model     = AutoModelForCausalLM.from_pretrained(model_name)
         self.model.eval()
@@ -83,8 +88,7 @@ class AnswerPerplexityScorer:
         raw_ppl = self._raw_perplexity(answer)
 
         # Score the answer conditioned on the question (if provided)
-        # This catches cases where someone pastes a generic answer that
-        # doesn't even respond to the specific question asked
+        # This catches cases where someone pastes a generic answer
         conditioned_ppl = raw_ppl
         if question_context:
             combined     = f"Q: {question_context}\nA: {answer}"
@@ -99,9 +103,6 @@ class AnswerPerplexityScorer:
         ## -- TokenBurstinessScorer (beyond raw perplexity) --
         # These capture more nuanced patterns in token-level probabilities,
         lps = self._token_log_probs(answer)
-        if len(lps) < 10:
-            return {"token_burstiness_fraud_score": 0.5,
-                    "note": "answer too short to score reliably"}
 
         lps_arr = np.array(lps)
         mean_lp = np.mean(lps_arr)
@@ -133,4 +134,3 @@ class AnswerPerplexityScorer:
             "high_prob_token_fraction":     round(float(high_prob_frac), 4),
             "low_prob_token_fraction":      round(float(low_prob_frac), 4),
         }
-

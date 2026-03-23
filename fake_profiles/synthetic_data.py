@@ -1,145 +1,204 @@
-import numpy as np
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_root = Path(__file__).resolve().parents[1]
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import hf_token
+
+hf_token.ensure_hf_environment()
+
+import re
 from dataclasses import dataclass, field
-from typing import Dict
-from features.tailored_aware import TailoredAwareFeatureExtractor 
+from datetime import datetime, timedelta
+from typing import Dict, List
+
+import numpy as np
+
+from features.timeline_coherence import TimelineEntry, TimelineCoherenceScorer
+from features.voice_consistency import ProfileVoiceConsistencyScorer
+from features.career_smoothness import CareerProgressionSmoothnessScorer
+from features.structural_organization import StructuralOrganizationScorer
+from features.operational_specificity import OperationalSpecificityScorer
+from features.cross_answer_consistency import CrossAnswerConsistencyScorer
+from features.depth_collapse import DepthCollapseDeltaScorer
+from features.narrative_causality import NarrativeCausalityScorer
+from features.answer_perplexity import AnswerPerplexityScorer
+from features.skill_taxonomy import SkillTaxonomyScorer
+
 
 @dataclass
-class CandidateGenerator:
-    fraud_rate: float = 0.3    # 30% of candidates are fraudulent
-    rng: np.random.Generator = field(
-        default_factory=lambda: np.random.default_rng(42)
-    )
+class LinkedInSyntheticProfile:
+    is_fraud: bool
+    jd_text: str
+    summary: str
+    experiences: List[Dict[str, str]]
+    skills: List[str]
+    timeline: List
+    screening_questions: List[str]
+    screening_answers: List[str]
+    web_signals: Dict[str, float]
 
-    def sample(self) -> Dict:
+    @property
+    def sections(self) -> Dict[str, str]:
+        sections = {"summary": self.summary, "skills": ", ".join(self.skills)}
+        for i, exp in enumerate(self.experiences):
+            sections[f"role_{i+1}"] = exp["description"]
+        return sections
+
+    @property
+    def profile_text(self) -> str:
+        role_text = "\n".join(
+            f"{e['title']} at {e['org']}: {e['description']}" for e in self.experiences
+        )
+        return f"{self.summary}\n\nSkills: {', '.join(self.skills)}\n\n{role_text}"
+
+
+@dataclass
+class SignalProcessor:
+    fraud_rate: float = 0.30
+    rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(42))
+
+    def __post_init__(self) -> None:
+        
+        self.skill_taxonomy_scorer = SkillTaxonomyScorer()
+
+        self.timeline_scorer = TimelineCoherenceScorer()
+        self.voice_scorer = ProfileVoiceConsistencyScorer()
+        self.career_scorer = CareerProgressionSmoothnessScorer()
+        self.structure_scorer = StructuralOrganizationScorer()
+        self.operational_scorer = OperationalSpecificityScorer()
+        self.cross_scorer = CrossAnswerConsistencyScorer()
+        self.depth_scorer = DepthCollapseDeltaScorer()
+        self.narrative_scorer = NarrativeCausalityScorer()
+        self.answer_perplexity_scorer = AnswerPerplexityScorer()
+
+    def random_profile(self) -> LinkedInSyntheticProfile:
         is_fraud = self.rng.random() < self.fraud_rate
+        jd_text = "Software Engineer role at a tech company."
+        summary = "Experienced software engineer with a passion for building scalable applications."
+        experiences = [
+            {"title": "Software Engineer", "org": "TechCorp", "description": "Worked on backend services."},
+            {"title": "Junior Developer", "org": "WebStart", "description": "Assisted in developing web applications."}
+        ] 
+        skills = ["Python", "Machine Learning", "Data Analysis"]
+        timeline = [
+            TimelineEntry(stage=0, timestamp=datetime.now() - timedelta(days=365)),
+            TimelineEntry(stage=1, timestamp=datetime.now() - timedelta(days=180)),
+            TimelineEntry(stage=2, timestamp=datetime.now() - timedelta(days=90)),
 
-        if is_fraud:
-            return self._fraud_candidate()
-        return self._genuine_candidate()
+        ]  
+        screening_questions = [
+            "Tell us about a challenging project you led.",
+            "How do you stay current with technology trends?"
+        ]
+        screening_answers = [
+            "I led a team to redesign our data pipeline, reducing query time by 40%.",
+            "I regularly read technical blogs and contribute to open-source projects."
+        ]
+        web_signals = {
+            "github_repos": self.rng.integers(5, 50),
+            "stackoverflow_reputation": self.rng.integers(100, 5000),
+            "linkedin_connections": self.rng.integers(100, 500)
+        }
+        
+        return LinkedInSyntheticProfile(
+            is_fraud=is_fraud,
+            jd_text=jd_text,
+            summary=summary,
+            experiences=experiences,
+            skills=skills,
+            timeline=timeline,
+            screening_questions=screening_questions,
+            screening_answers=screening_answers,
+            web_signals=web_signals
+        )
 
-    def _genuine_candidate(self) -> Dict:
-        r = self.rng
-        return {
-            "is_fraud": False,
-            # Profile: low burst, patchy skills, few retroactive metrics
-            "vocab_burst_score":            r.normal(0.15, 0.08),
-            "skill_completeness":           r.normal(0.55, 0.15),
-            "retroactive_metric_density":   r.normal(0.8,  0.5),
-            "buzzword_jd_overlap":          r.normal(0.35, 0.10),
-            "connection_temporal_alignment":r.normal(0.65, 0.15),
-            # Screening: medium perplexity, specific, hedges appropriately
-            "answer_perplexity_q1":         r.normal(0.55, 0.12),
-            "operational_specificity_q1":   r.normal(0.65, 0.15),
-            "depth_collapse_delta":         r.normal(0.15, 0.08),
-            "uncertainty_expression_rate":  r.normal(0.30, 0.10),
-            "structural_org_score":         r.normal(0.35, 0.12),
-            "recency_accuracy":             r.normal(0.70, 0.15),
-            # Web: commits exist, traces exist
-            "github_commit_density":        r.normal(0.60, 0.20),
-            "tenure_web_exhaust_ratio":     r.normal(0.25, 0.10),
-            "forum_temporal_trace":         r.normal(0.55, 0.20),
-            "publication_verify_score":     r.normal(0.80, 0.15),
+    def stage_zero(self, profile: LinkedInSyntheticProfile) -> dict:
+
+        # Stage 0
+        skill_taxonomy_result = self.skill_taxonomy_scorer.score()
+        skill_taxonomy = {
+            "coverage_score": skill_taxonomy_result.coverage_score,
+            "idiosyncrasy_score": skill_taxonomy_result.idiosyncrasy_score,
+            "semantic_mirror_score": skill_taxonomy_result.semantic_mirror_score,
         }
 
-    def _fraud_candidate(self) -> Dict:
-        r = self.rng
-        return {
-            "is_fraud": True,
-            # Profile: high burst, suspiciously clean, lots of retroactive numbers
-            "vocab_burst_score":            r.normal(0.75, 0.10),
-            "skill_completeness":           r.normal(0.92, 0.05),
-            "retroactive_metric_density":   r.normal(3.5,  0.8),
-            "buzzword_jd_overlap":          r.normal(0.82, 0.08),
-            "connection_temporal_alignment":r.normal(0.15, 0.10),
-            # Screening: low perplexity (LLM-smooth), vague, overconfident
-            "answer_perplexity_q1":         r.normal(0.18, 0.08),
-            "operational_specificity_q1":   r.normal(0.20, 0.10),
-            "depth_collapse_delta":         r.normal(0.68, 0.12),
-            "uncertainty_expression_rate":  r.normal(0.03, 0.03),
-            "structural_org_score":         r.normal(0.88, 0.08),
-            "recency_accuracy":             r.normal(0.25, 0.12),
-            # Web: no traces
-            "github_commit_density":        r.normal(0.05, 0.05),
-            "tenure_web_exhaust_ratio":     r.normal(0.92, 0.08),
-            "forum_temporal_trace":         r.normal(0.08, 0.06),
-            "publication_verify_score":     r.normal(0.10, 0.10),
+        timeline_coherence_result = self.timeline_scorer.score(profile.timeline)
+        timeline_coherence = {
+            "timeline_coherence_fraud_score": timeline_coherence_result.timeline_coherence_fraud_score,
         }
-    
 
-    def extract_features(self, candidate: Dict) -> np.ndarray:
-        # Order features as they are revealed in the environment
+        career_smoothness_result = self.career_scorer.score(profile.timeline)
+        career_smoothness = {
+            "career_smoothness_fraud_score": career_smoothness_result.career_smoothness_fraud_score,
+        }
 
+        voice_score_result = self.voice_scorer.score(profile.sections)
+        voice_score = {
+            "profile_voice_fraud_score": voice_score_result.profile_voice_fraud_score,
+            "soft_skill_mean_rate": voice_score_result.soft_skill_mean_rate,
+            "soft_skill_cv": voice_score_result.soft_skill_cv,
+            "sentence_uniformity": voice_score_result.sentence_uniformity,
+            "tech_density_cv": voice_score_result.tech_density_cv,
+            "voice_cluster_penalty": voice_score_result.voice_cluster_penalty
+        }
+        return {**skill_taxonomy, **timeline_coherence, **career_smoothness, **voice_score}
 
+    def stage_one(self, profile: LinkedInSyntheticProfile) -> dict:
+        # Stage 1
+        a1 = profile.screening_answers[0]
 
-        return np.array([
-            candidate["skill_completeness"],
-            candidate["retroactive_metric_density"],
-            candidate["buzzword_jd_overlap"],
-            candidate["connection_temporal_alignment"],
-            candidate["answer_perplexity_q1"],
-            candidate["operational_specificity_q1"],
-            candidate["depth_collapse_delta"],
-            candidate["uncertainty_expression_rate"],
-            candidate["structural_org_score"],
-            candidate["recency_accuracy"],
-            candidate["github_commit_density"],
-            candidate["tenure_web_exhaust_ratio"],
-            candidate["forum_temporal_trace"],
-            candidate["publication_verify_score"],
-        ], dtype=np.float32)
+        # q1_op_fraud = self._operational_specificity_fraud(a1, profile.is_fraud)
+        
+        narrative_result = self.narrative_scorer.score(a1) 
+        narrative = {
+            "causal_span_score": narrative_result.causal_span_score,
+            "result_entity_score": narrative_result.result_entity_score,
+            "coherence_score": narrative_result.coherence_score,
+        }
 
+        answer_perplexity = self.answer_perplexity_scorer.score(a1)
+        asnwer_perplexity_score = {
+            "answer_perplexity_score": answer_perplexity.answer_perplexity_score,
+            "raw_perplexity": answer_perplexity.raw_perplexity,
+            "conditioned_perplexity": answer_perplexity.conditioned_perplexity,
+            "mean_log_prob": answer_perplexity.mean_log_prob,
+            "log_prob_cv": answer_perplexity.log_prob_cv,
+            "high_prob_token_fraction": answer_perplexity.high_prob_token_fraction,
+            "low_prob_token_fraction": answer_perplexity.low_prob_token_fraction,
+        }
 
-# For more realistic synthetic data, sdv (Synthetic Data Vault) lets you fit a 
-# multivariate model to whatever ground-truth distribution you have and sample 
-# from it; Faker is good for generating the raw text that features get computed 
-# from; Great Expectations helps validate that generated data stays in realistic 
-# ranges.
+        # structural = self._structural_over_org(a1, profile.is_fraud)
+        # response_div = self._response_divergence(q1, a1, profile.is_fraud)
+        # token_burst = self._token_burstiness_fraud(a1_) answer perplexity.
 
-class ProfileGenerator:
-    """Generate realistic LinkedIn profiles and resumes for candidates."""
-    
-    LINKEDIN_PROFILE_PROMPT = """Generate a LinkedIn profile summary for a {job_title} candidate.
-Requirements:
-- ~2-3 sentences, conversational tone
-- Mention 2-3 relevant skills but NOT all required skills from the job posting
-- Include a minor gap or pivot in background (e.g., "transitioned from X to Y")
-- Use varied sentence structure: some short, some longer
-- Avoid clichés like "passionate" or "results-driven"
-- Sound like a real person, not polished or templated
+        return {**narrative, **asnwer_perplexity_score}
 
-Job posting requirements: {job_requirements}
-Candidate background: {background}"""
+        # Stage 2
+    def stage_two(self, profile: LinkedInSyntheticProfile) -> dict:
+        a1 = profile.screening_answers[0]
+        q1 = profile.screening_questions[0]
+        a2 = profile.screening_answers[1]
+        q2 = profile.screening_questions[1]
+        
+        depth_delta = self.depth_scorer.compute_delta(a1, q1, a2, q2).depth_collapse_delta
+        return {"depth_collapse_delta": depth_delta}
 
-    RESUME_SUMMARY_PROMPT = """Write a resume professional summary for a {job_title} role.
-Requirements:
-- 3-4 sentences maximum
-- Highlight experience, but leave room for growth
-- Missing 1-2 skills from the job posting (realistic gaps)
-- Use varied phrasing: "led X", "worked on Y", "responsible for Z"
-- Include one slightly awkward phrasing or grammar quirk (naturalistic)
-- Avoid generic buzzwords; be specific about 1-2 achievements
+        # Stage 3
+    def stage_three(self, profile: LinkedInSyntheticProfile) -> dict:
+        cross = self.cross_scorer.score(profile.screening_answers)
+        cross_answer_score = {
+            "cross_answer_consistency_fraud_score": cross.cross_answer_consistency_fraud_score,
+            "combined_consitency_score": cross.combined_consistency_score,
+        }
+        # q2_op_fraud = self._operational_specificity_fraud(a2, profile.is_fraud)
+        # operational_agg = clip(0.5 * q1_op_fraud + 0.5 * q2_op_fraud)
 
-Job posting: {job_posting}
-Years of experience: {years_exp}"""
+        return cross_answer_score
 
-    WORK_EXPERIENCE_PROMPT = """Generate 3 work experience entries for a {job_title} candidate.
-Requirements per entry:
-- Job title, company, dates (realistic timeline gaps allowed)
-- 2-3 bullet points per role
-- Mix of relevant and semi-relevant responsibilities
-- Vary bullet point length and specificity
-- Include metrics in only 1-2 bullets (not all)
-- Sound authentic: "Helped improve X" not "Led transformational Y"
+       
 
-Target role: {target_role}
-Career trajectory: {career_path}"""
-
-    SKILLS_PROMPT = """List relevant skills for a {job_title} candidate.
-Requirements:
-- 10-15 skills total
-- Include 60% matching job requirements, 40% adjacent/transferable skills
-- Vary proficiency levels: expert in 3-4, intermediate in rest
-- Include 1-2 outdated or declining skills (realistic)
-- Format as simple list, not keyword-stuffed
-
-Job posting: {job_posting}"""
