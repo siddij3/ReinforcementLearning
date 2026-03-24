@@ -1,7 +1,7 @@
 import numpy as np
 import re
 from typing import List
-from timeline_coherence import TimelineEntry
+from .timeline_coherence import TimelineEntry
 
 SENIORITY_LEVELS = {
     "intern": 0, "junior": 1, "associate": 1, "engineer": 2,

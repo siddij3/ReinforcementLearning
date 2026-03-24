@@ -1,2 +1,7 @@
 /.venv
 __pycache__/*
+.env
+/hf_home
+features/__pycache__/*
+fake_profiles/__pycache__/*
+*/_pycache__/*

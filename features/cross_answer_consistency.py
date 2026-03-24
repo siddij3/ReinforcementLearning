@@ -52,6 +52,11 @@ _MODELS: Dict = {}
 def _load(key: str):
     if key in _MODELS:
         return _MODELS[key]
+    try:
+        from .hub_auth import ensure_hf_token_for_downloads
+    except ImportError:
+        from hub_auth import ensure_hf_token_for_downloads
+    ensure_hf_token_for_downloads()
     from transformers import pipeline
     from sentence_transformers import SentenceTransformer
 
