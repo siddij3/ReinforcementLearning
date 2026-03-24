@@ -1,18 +1,3 @@
-"""
-Hugging Face Hub: local cache directory, token, optional offline mode.
-
-- **Disk cache**: By default all models are stored under ``<repo>/hf_home/``
-  (``HF_HOME``). Run ``python download_hf_models.py`` once to fetch snapshots;
-  later loads use the cache and do not re-download.
-
-- **Token**: ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` from env or ``.env``.
-
-- **Offline** (optional): Set ``HF_OFFLINE=1`` in ``.env`` after downloading
-  to force loads from disk only (no Hub network calls).
-
-Do not commit real tokens. Copy ``.env.example`` → ``.env`` and paste your token.
-"""
-
 from __future__ import annotations
 
 import os
@@ -75,6 +60,9 @@ def ensure_hf_environment() -> None:
 
     _configure_local_hf_home(root)
     _configure_offline_from_env()
+    # Avoid fork/thread issues with tokenizers and reduce CPU oversubscription on Windows.
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
 
     global _done
     if _done:

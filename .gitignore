@@ -5,3 +5,4 @@ __pycache__/*
 features/__pycache__/*
 fake_profiles/__pycache__/*
 */_pycache__/*
+runs/*

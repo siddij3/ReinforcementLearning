@@ -1,7 +1,4 @@
 """
-cross_answer_consistency_scorer.py  (domain-agnostic rewrite)
-
-What was domain-specific and why
 ─────────────────────────────────
 1. extract_claims — version numbers as the primary claim type
    Patterns like r'Ray 2.6' or r'Python 3.9' only fire for software.
@@ -27,10 +24,6 @@ What was domain-specific and why
    Team size regex is already reasonable but version pattern fires only
    on software versioning notation (X.Y.Z).
 
-   Fix: generalise to "named entity + cardinal number" pairs via NER,
-   which captures "Series B round of $40M", "portfolio of 12 companies",
-   "panel of 8 physicians", "campaign with 3.2M impressions" equally.
-
 Models used
 ───────────
 - all-MiniLM-L6-v2  (semantic layer — unchanged, already domain-agnostic)
@@ -45,37 +38,27 @@ from itertools import combinations
 from collections import defaultdict
 
 
-# ── Lazy model loading ────────────────────────────────────────────────────────
-
-_MODELS: Dict = {}
+# ── Lazy model loading (process-wide — hf_pipeline_cache) ─────────────────────
 
 def _load(key: str):
-    if key in _MODELS:
-        return _MODELS[key]
     try:
-        from .hub_auth import ensure_hf_token_for_downloads
+        from .hf_pipeline_cache import get_sentence_transformer, get_transformers_pipeline
     except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-    from transformers import pipeline
-    from sentence_transformers import SentenceTransformer
+        from hf_pipeline_cache import get_sentence_transformer, get_transformers_pipeline
 
     loaders = {
-        "embedder": lambda: SentenceTransformer(
-            "all-MiniLM-L6-v2"
-        ),
-        "ner": lambda: pipeline(
+        "embedder": lambda: get_sentence_transformer("all-MiniLM-L6-v2"),
+        "ner": lambda: get_transformers_pipeline(
             "ner",
-            model="Jean-Baptiste/roberta-large-ner-english",
+            "Jean-Baptiste/roberta-large-ner-english",
             aggregation_strategy="simple",
         ),
-        "nli": lambda: pipeline(
+        "nli": lambda: get_transformers_pipeline(
             "text-classification",
-            model="cross-encoder/nli-deberta-v3-small",
+            "cross-encoder/nli-deberta-v3-small",
         ),
     }
-    _MODELS[key] = loaders[key]()
-    return _MODELS[key]
+    return loaders[key]()
 
 
 # ── Sentence splitter ─────────────────────────────────────────────────────────
@@ -280,11 +263,7 @@ class CrossAnswerConsistencyScorer:
         Pass 2: NLI sentence-pair contradiction detection
           For each pair of answers, extract salient claim sentences and run
           the NLI cross-encoder to check for logical contradiction.
-          Catches domain-agnostic contradictions the structured pass misses:
-            - "bull market positioning" vs "bear market positioning"  (finance)
-            - "mortality rate improved" vs "mortality rate worsened"  (healthcare)
-            - "CTR increased" vs "CTR decreased"  (marketing)
-            - "we grew the team" vs "we reduced headcount"  (any domain)
+          Catches domain-agnostic contradictions the structured pass misses.
         """
         all_claims     = [self.extract_claims(a) for a in answers]
         contradictions = []
@@ -424,7 +403,7 @@ class CrossAnswerConsistencyScorer:
             scored.append((score, s))
 
         scored.sort(key=lambda x: -x[0])
-        return [s for _, s in scored if _ > 0]
+        return [s for score, s in scored if score > 0]
 
     # ── Combined score ────────────────────────────────────────────────────────
 
@@ -432,28 +411,16 @@ class CrossAnswerConsistencyScorer:
         semantic = self.semantic_consistency(answers)
         factual  = self.factual_consistency(answers, questions)
 
-        combined     = (
-            0.40 * semantic["semantic_consistency"]
-          + 0.60 * factual["factual_consistency"]
-        )
-        fraud_signal = 1.0 - combined
+        # combined     = (
+        #     0.40 * semantic["semantic_consistency"]
+        #   + 0.60 * factual["factual_consistency"]
+        # )
+        # fraud_signal = 1.0 - combined
 
         return {
-            "cross_answer_consistency_fraud_score": round(fraud_signal, 4),
-            "combined_consistency":                 round(combined, 4),
-            "semantic":                             semantic,
-            "factual":                              factual,
-            "verdict":                              self._interpret(fraud_signal),
+            "semantic":                             semantic["semantic_consistency"],
+            "factual":                              factual["factual_consistency"],
         }
-
-    @staticmethod
-    def _interpret(fraud_signal: float) -> str:
-        if fraud_signal > 0.65:
-            return "high inconsistency — likely separate LLM calls per question"
-        if fraud_signal > 0.35:
-            return "moderate inconsistency — probe for contradictions directly"
-        return "internally consistent — answers share a coherent implied world"
-
 
 # ── Usage: four domains ───────────────────────────────────────────────────────
 

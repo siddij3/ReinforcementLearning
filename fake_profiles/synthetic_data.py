@@ -101,8 +101,6 @@ class SignalProcessor:
         self.narrative_scorer = NarrativeCausalityScorer() if not self.narrative_scorer else self.narrative_scorer
         self.answer_perplexity_scorer = AnswerPerplexityScorer() if not self.answer_perplexity_scorer else self.answer_perplexity_scorer
 
-        # q1_op_fraud = self._operational_specificity_fraud(a1, profile.is_fraud)
-        
         narrative_result = self.narrative_scorer.score(a1) 
         narrative = {
             "causal_span_score": narrative_result.causal_span_score,
@@ -110,6 +108,7 @@ class SignalProcessor:
             "coherence_score": narrative_result.coherence_score,
         }
 
+        print(narrative)
         answer_perplexity = self.answer_perplexity_scorer.score(a1)
         asnwer_perplexity_score = {
             "answer_perplexity_score": answer_perplexity["answer_perplexity_score"],
@@ -121,13 +120,33 @@ class SignalProcessor:
             "low_prob_token_fraction": answer_perplexity["low_prob_token_fraction"],
         }
 
-        print(narrative)
         print(asnwer_perplexity_score)
         return {**narrative, **asnwer_perplexity_score}
 
         # Stage 2
-    
     def stage_one(self, profile: LinkedInSyntheticProfile) -> dict:
+
+        self.cross_scorer = CrossAnswerConsistencyScorer() if not self.cross_scorer else self.cross_scorer
+        self.operational_scorer = OperationalSpecificityScorer() if not self.operational_scorer else self.operational_scorer
+
+        cross = self.cross_scorer.score(profile.screening_answers)
+        cross_answer_score = {
+            "semantic_consistency": cross["semantic"],
+            "factual_consistency": cross["factual"]
+            # "verdict": cross["verdict"],
+        }
+
+        operational_specificity = self.operational_scorer.score(profile.screening_answers)
+        operational_specificity_score = {
+            "operational_specificity_score": operational_specificity["operational_specificity_score"],
+            "artifact_count": operational_specificity["artifact_count"],
+            "weighted_density": operational_specificity["weighted_density"],
+            "type_diversity": operational_specificity["type_diversity"],
+        }
+
+        return {**cross_answer_score, **operational_specificity_score}  
+
+    def stage_two(self, profile: LinkedInSyntheticProfile) -> dict:
         a1 = profile.screening_answers[0]
         q1 = profile.screening_questions[0]
         a2 = profile.screening_answers[1]
@@ -136,26 +155,12 @@ class SignalProcessor:
         self.depth_scorer = DepthCollapseDeltaScorer() if not self.depth_scorer else self.depth_scorer
         
         depth_delta = self.depth_scorer.compute_delta(a1, q1, a2, q2)["depth_collapse_delta"]
-        print(depth_delta)
+
         return {"depth_collapse_delta": depth_delta}
 
         # Stage 3
     
-    def stage_two(self, profile: LinkedInSyntheticProfile) -> dict:
-
-        self.cross_scorer = CrossAnswerConsistencyScorer() if not self.cross_scorer else self.cross_scorer
-
-        cross = self.cross_scorer.score(profile.screening_answers)
-        cross_answer_score = {
-            "cross_answer_consistency_fraud_score": cross["cross_answer_consistency_fraud_score"],
-            "combined_consitency_score": cross["combined_consistency"],
-        }
-        # q2_op_fraud = self._operational_specificity_fraud(a2, profile.is_fraud)
-        # operational_agg = clip(0.5 * q1_op_fraud + 0.5 * q2_op_fraud)
-
-        print(cross_answer_score)
-        return cross_answer_score
-        
+    
     def stage_three(self, profile: LinkedInSyntheticProfile) -> dict:
 
         # Stage 0
@@ -170,19 +175,17 @@ class SignalProcessor:
             "idiosyncrasy_score": skill_taxonomy_result.idiosyncrasy_score,
             "semantic_mirror_score": skill_taxonomy_result.semantic_mirror_score,
         }
-        print(skill_taxonomy)
 
         timeline_coherence_result = self.timeline_scorer.score(profile.timeline)
         timeline_coherence = {
             "timeline_coherence_fraud_score": timeline_coherence_result["timeline_coherence_fraud_score"],
         }
 
-        print(timeline_coherence)
         career_smoothness_result = self.career_scorer.score(profile.timeline) # To Fix
         career_smoothness = {
             "career_smoothness_fraud_score": career_smoothness_result["career_smoothness_fraud_score"],
         }
-        print(career_smoothness)
+
         voice_score_result = self.voice_scorer.score(profile.sections)
         voice_score = {
             "profile_voice_fraud_score": voice_score_result["profile_voice_fraud_score"],
@@ -192,7 +195,7 @@ class SignalProcessor:
             "tech_density_cv": voice_score_result["tech_density_cv"],
             "voice_cluster_penalty": voice_score_result["voice_cluster_penalty"]
         }
-        print(voice_score)
+        
         return {**skill_taxonomy, **timeline_coherence, **career_smoothness, **voice_score}
 
     def stage_four(self, profile: LinkedInSyntheticProfile) -> dict:

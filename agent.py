@@ -17,8 +17,8 @@ import torch.nn as nn
 
 
 def make_env():
-
-    return Monitor(CandidateEnv(signal_processor=SignalProcessor()))
+    # debug=False avoids per-reset log spam; set True when inspecting profiles.
+    return Monitor(CandidateEnv(signal_processor=SignalProcessor(), debug=False))
 
 
 if __name__ == "__main__":

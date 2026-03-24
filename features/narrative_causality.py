@@ -34,45 +34,36 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 
-# ── Lazy model registry ───────────────────────────────────────────────────────
-
-_MODELS: Dict = {}
+# ── Lazy model registry (process-wide cache — see hf_pipeline_cache) ──────────
 
 def _load(key: str):
     """Loads a model once and caches it. Call only when needed."""
-    if key in _MODELS:
-        return _MODELS[key]
     try:
-        from .hub_auth import ensure_hf_token_for_downloads
+        from .hf_pipeline_cache import get_transformers_pipeline
     except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-
-    from transformers import pipeline
+        from hf_pipeline_cache import get_transformers_pipeline
 
     loaders = {
-        "causal": lambda: pipeline(
+        "causal": lambda: get_transformers_pipeline(
             "token-classification",
-            model="tanfiona/unicausal-tok-cls-baseline",
+            "tanfiona/unicausal-tok-cls-baseline",
             aggregation_strategy="simple",
         ),
-        "zeroshot": lambda: pipeline(
+        "zeroshot": lambda: get_transformers_pipeline(
             "zero-shot-classification",
-            model="MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
+            "MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
         ),
-        "ner": lambda: pipeline(
+        "ner": lambda: get_transformers_pipeline(
             "ner",
-            model="Jean-Baptiste/roberta-large-ner-english",
+            "Jean-Baptiste/roberta-large-ner-english",
             aggregation_strategy="simple",
         ),
-        "nli": lambda: pipeline(
+        "nli": lambda: get_transformers_pipeline(
             "text-classification",
-            model="cross-encoder/nli-deberta-v3-small",
-        )
+            "cross-encoder/nli-deberta-v3-small",
+        ),
     }
-
-    _MODELS[key] = loaders[key]()
-    return _MODELS[key]
+    return loaders[key]()
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────

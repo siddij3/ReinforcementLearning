@@ -35,25 +35,18 @@ _________________________________________________________
 
 import re
 import numpy as np
-from typing import Dict, List, Optional
+from typing import List, Optional
 from dataclasses import dataclass, field
 
 _SKILL_EMBEDDER_MODEL = "Nashhz/SBERT_KFOLD_JobDescriptions_Skills_UserPortfolios"
-_EMBEDDERS: Dict[str, object] = {}
 
 
 def _load_skill_embedder(model_name: str = _SKILL_EMBEDDER_MODEL):
-    if model_name in _EMBEDDERS:
-        return _EMBEDDERS[model_name]
     try:
-        from .hub_auth import ensure_hf_token_for_downloads
+        from .hf_pipeline_cache import get_sentence_transformer
     except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-    from sentence_transformers import SentenceTransformer
-
-    _EMBEDDERS[model_name] = SentenceTransformer(model_name)
-    return _EMBEDDERS[model_name]
+        from hf_pipeline_cache import get_sentence_transformer
+    return get_sentence_transformer(model_name)
 
 
 @dataclass

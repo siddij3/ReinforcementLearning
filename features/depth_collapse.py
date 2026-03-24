@@ -33,35 +33,27 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 
 
-# ── Lazy model registry ───────────────────────────────────────────────────────
-
-_MODELS: Dict = {}
+# ── Lazy model registry (process-wide — hf_pipeline_cache) ────────────────────
 
 def _load(key: str):
-    if key in _MODELS:
-        return _MODELS[key]
     try:
-        from .hub_auth import ensure_hf_token_for_downloads
+        from .hf_pipeline_cache import get_sentence_transformer, get_transformers_pipeline
     except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-    from transformers import pipeline
-    from sentence_transformers import SentenceTransformer
+        from hf_pipeline_cache import get_sentence_transformer, get_transformers_pipeline
 
     loaders = {
-        "zeroshot": lambda: pipeline(
+        "zeroshot": lambda: get_transformers_pipeline(
             "zero-shot-classification",
-            model="MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
+            "MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
         ),
-        "ner": lambda: pipeline(
+        "ner": lambda: get_transformers_pipeline(
             "ner",
-            model="Jean-Baptiste/roberta-large-ner-english",
+            "Jean-Baptiste/roberta-large-ner-english",
             aggregation_strategy="simple",
         ),
-        "embedder": lambda: SentenceTransformer("all-MiniLM-L6-v2"),
+        "embedder": lambda: get_sentence_transformer("all-MiniLM-L6-v2"),
     }
-    _MODELS[key] = loaders[key]()
-    return _MODELS[key]
+    return loaders[key]()
 
 
 # ── Sentence splitter ─────────────────────────────────────────────────────────

@@ -24,11 +24,16 @@ from gymnasium import spaces
 
 class CandidateEnv(gym.Env):
     MAX_STAGES = 5
-    FEATURE_DIM = 24   # total features at full observation
+    # 11 (stage_zero + pad) + 10 (stage_one + pads) + 1 (depth) + 12 (profile) — must match _build_feature_cache
+    FEATURE_DIM = 34
 
     # Probe costs — stage 4 entry removed: reaching stage 4 forces a PASS,
     # so the agent never pays a probe cost at stage 4.
-    _PROBE_COSTS = {0: -0.05, 1: -0.08, 2: -0.10, 3: -0.15}
+    _PROBE_COSTS = {0: -0.05, 
+                    1: -0.08, 
+                    2: -0.10, 
+                    3: -0.15,
+                    4: -0.20}
 
     def __init__(self, signal_processor=None, *, debug: bool = True):
         super().__init__()
@@ -37,7 +42,7 @@ class CandidateEnv(gym.Env):
         self._feature_cache = np.zeros(self.FEATURE_DIM, dtype=np.float32)
 
         # ── Observation space ──────────────────────────────────────────────
-        # Shape: (17 features) + (5-dim stage one-hot) = 22 floats.
+        # Shape: FEATURE_DIM + MAX_STAGES (one-hot).
         # Bounds [0, 1] match the actual data range produced by
         # CandidateGenerator: all features are np.clip(v, 0, 1) and the
         # stage one-hot is either 0.0 or 1.0.
@@ -177,6 +182,7 @@ class CandidateEnv(gym.Env):
         cache.fill(0.0)
 
         stage_zero = self.signals.stage_zero(c)
+        print(stage_zero)
         cache[0] = stage_zero.get("causal_span_score", 0.0)
         cache[1] = stage_zero.get("result_entity_score", 0.0)
         cache[2] = stage_zero.get("coherence_score", 0.0)
@@ -187,29 +193,39 @@ class CandidateEnv(gym.Env):
         cache[7] = stage_zero.get("log_prob_cv", 0.0)
         cache[8] = stage_zero.get("high_prob_token_fraction", 0.0)
         cache[9] = stage_zero.get("low_prob_token_fraction", 0.0)
+        cache[10] = 0.0  # pad so block 0 matches out[0:11]
 
         stage_one = self.signals.stage_one(c)
-        cache[10] = stage_one.get("depth_collapse_delta", 0.0)
+        print(stage_one)
+        cache[11] = stage_one.get("semantic_consistency", 0.0)
+        cache[12] = stage_one.get("factual_consistency", 0.0)
+        cache[13] = stage_one.get("operational_specificity_score", 0.0)
+        cache[14] = stage_one.get("artifact_count", 0.0)
+        cache[15] = stage_one.get("weighted_density", 0.0)
+        cache[16] = stage_one.get("type_diversity", 0.0)
+        cache[17] = 0.0
+        cache[18] = 0.0
+        cache[19] = 0.0
+        cache[20] = 0.0
 
         stage_two = self.signals.stage_two(c)
-        cache[11] = stage_two.get("cross_answer_consistency_fraud_score", 0.0)
-        cache[12] = stage_two.get("combined_consistency_score", 0.0)
+        print(stage_two)
+        cache[21] = stage_two.get("depth_collapse_delta", 0.0)
 
         stage_three = self.signals.stage_three(c)
-        cache[13] = stage_three.get("coverage_score", 0.0)
-        cache[14] = stage_three.get("idiosyncrasy_score", 0.0)
-        cache[15] = stage_three.get("semantic_mirror_score", 0.0)
-        cache[16] = stage_three.get("timeline_coherence_fraud_score", 0.0)
-        cache[17] = stage_three.get("career_smoothness_fraud_score", 0.0)
-        cache[18] = stage_three.get("profile_voice_fraud_score", 0.0)
-        cache[19] = stage_three.get("soft_skill_mean_rate", 0.0)
-        cache[20] = stage_three.get("soft_skill_cv", 0.0)
-        cache[21] = stage_three.get("sentence_uniformity", 0.0)
-        cache[22] = stage_three.get("tech_density_cv", 0.0)
-        cache[23] = stage_three.get("voice_cluster_penalty", 0.0)
-
-        # stage_four = self.signals.stage_four(c) Untested, Not implemented
-        # cache[24] = stage_four.get("github_archaeology_fraud_score", 0.0)
+        print(stage_three)
+        cache[22] = stage_three.get("coverage_score", 0.0)
+        cache[23] = stage_three.get("idiosyncrasy_score", 0.0)
+        cache[24] = stage_three.get("semantic_mirror_score", 0.0)
+        cache[25] = stage_three.get("timeline_coherence_fraud_score", 0.0)
+        cache[26] = stage_three.get("career_smoothness_fraud_score", 0.0)
+        cache[27] = stage_three.get("profile_voice_fraud_score", 0.0)
+        cache[28] = stage_three.get("soft_skill_mean_rate", 0.0)
+        cache[29] = stage_three.get("soft_skill_cv", 0.0)
+        cache[30] = stage_three.get("sentence_uniformity", 0.0)
+        cache[31] = stage_three.get("tech_density_cv", 0.0)
+        cache[32] = stage_three.get("voice_cluster_penalty", 0.0)
+        cache[33] = 0.0  # reserved for future use (e.g. stage_four git signal)
 
     def _revealed_features(self) -> np.ndarray:
         out = np.zeros(self.FEATURE_DIM, dtype=np.float32)
@@ -219,7 +235,7 @@ class CandidateEnv(gym.Env):
         if self.stage >= 2:
             out[21] = self._feature_cache[21]
         if self.stage >= 3:
-            out[22:24] = self._feature_cache[22:24]
+            out[22:34] = self._feature_cache[22:34]
         return out
 
     # ── Utilities ──────────────────────────────────────────────────────────
@@ -242,6 +258,28 @@ class CandidateEnv(gym.Env):
 
         print(f"\n  Stage [{self.stage}] {stage}  |  is_fraud={fraud}")
         feature_names = [
+            "causal_span_score",
+            "result_entity_score",
+            "coherence_score",
+            "answer_perplexity_score",
+            "raw_perplexity",
+            "conditioned_perplexity",
+            "mean_log_prob",
+            "log_prob_cv",
+            "high_prob_token_fraction",
+            "low_prob_token_fraction",
+            "feature_pad_10",
+            "semantic_consistency",
+            "factual_consistency",
+            "operational_specificity_score",
+            "artifact_count",
+            "weighted_density",
+            "type_diversity",
+            "pad_17",
+            "pad_18",
+            "pad_19",
+            "pad_20",
+            "depth_collapse_delta",
             "coverage_score",
             "idiosyncrasy_score",
             "semantic_mirror_score",
@@ -253,19 +291,7 @@ class CandidateEnv(gym.Env):
             "sentence_uniformity",
             "tech_density_cv",
             "voice_cluster_penalty",
-            "causal_span_score",
-            "result_entity_score",
-            "coherence_score",
-            "answer_perplexity_score",
-            "raw_perplexity",
-            "conditioned_perplexity",
-            "mean_log_prob",
-            "log_prob_cv",
-            "high_prob_token_fraction",
-            "low_prob_token_fraction",
-            "depth_collapse_delta",
-            "cross_answer_consistency_fraud_score",
-            "combined_consistency_score",
+            "reserved_33",
         ]
         for i, (name, val) in enumerate(zip(feature_names, obs)):
             if val != 0.0:

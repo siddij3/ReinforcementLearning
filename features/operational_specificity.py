@@ -21,35 +21,29 @@ extraction layer is swapped out.
 import re
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 
 
-# ── Model registry ────────────────────────────────────────────────────────────
-
-_MODELS: Dict = {}
+# ── Model registry (process-wide — hf_pipeline_cache) ─────────────────────────
 
 def _load(key: str):
-    if key in _MODELS:
-        return _MODELS[key]
     try:
-        from .hub_auth import ensure_hf_token_for_downloads
+        from .hf_pipeline_cache import get_transformers_pipeline
     except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-    from transformers import pipeline
+        from hf_pipeline_cache import get_transformers_pipeline
+
     loaders = {
-        "ner": lambda: pipeline(
+        "ner": lambda: get_transformers_pipeline(
             "ner",
-            model="Jean-Baptiste/roberta-large-ner-english",
+            "Jean-Baptiste/roberta-large-ner-english",
             aggregation_strategy="simple",
         ),
-        "zeroshot": lambda: pipeline(
+        "zeroshot": lambda: get_transformers_pipeline(
             "zero-shot-classification",
-            model="MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
+            "MoritzLaurer/deberta-v3-base-zeroshot-v1.1-all-33",
         ),
     }
-    _MODELS[key] = loaders[key]()
-    return _MODELS[key]
+    return loaders[key]()
 
 
 # ── Dataclass (unchanged) ─────────────────────────────────────────────────────
@@ -206,13 +200,17 @@ class OperationalSpecificityScorer:
 
         return artifacts
 
-    def score(self, answer: str, expected_seniority: str = "senior") -> dict:
+    def score(
+        self, answer: Union[str, List[str]], expected_seniority: str = "senior"
+    ) -> dict:
         """
         Parameters
         ----------
-        answer             : candidate's answer text
+        answer             : candidate's answer text, or list of answers (joined)
         expected_seniority : 'junior' | 'mid' | 'senior' | 'staff'
         """
+        if isinstance(answer, list):
+            answer = "\n\n".join(str(a).strip() for a in answer if a is not None)
         seniority_bars = {
             "junior": 0.3, "mid": 0.5, "senior": 0.7, "staff": 0.85
         }
@@ -301,7 +299,6 @@ class OperationalSpecificityScorer:
                         weight=1.0,
                         context=sent,
                     ))
-        print(artifacts, "named_errors")
         return artifacts
 
     def _extract_failure_mechanisms(
@@ -502,111 +499,111 @@ class OperationalSpecificityScorer:
 
 # ── Usage: four domains ───────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    scorer = OperationalSpecificityScorer()
+# if __name__ == "__main__":
+#     scorer = OperationalSpecificityScorer()
 
-    test_cases = [
-        # ── Software (original domain) ─────────────────────────────
-        {
-            "domain": "Software — Kafka",
-            "llm": """
-                To optimize Kafka consumer throughput, I focused on tuning
-                fetch.min.bytes and fetch.max.wait.ms to batch messages
-                efficiently. I also increased consumer threads to match
-                partition count and monitored consumer lag using standard
-                metrics. I implemented a dead letter queue for poison pill
-                messages and ensured proper offset management.
-            """,
-            "genuine": """
-                We had consumer lag spiking to 40 minutes on our payments
-                topic — turned out max.poll.records was at 500 and our
-                deserialization was hitting a ProtobufDecodeError on 0.1%
-                of messages, causing the whole poll loop to retry. The OOM
-                kills were a red herring. Fixed it by dropping max.poll.records
-                to 50, routing errors to dead-letter-payments-v2, and bumping
-                fetch.max.wait.ms from 500 to 1000ms. p99 lag went from 40min
-                to 8s.
-            """,
-        },
-        # ── Finance ────────────────────────────────────────────────
-        {
-            "domain": "Finance — fixed income",
-            "llm": """
-                Managing interest rate risk requires careful duration analysis
-                and regular portfolio rebalancing. Generally speaking, investors
-                should monitor DV01 exposure and use rate swaps to hedge against
-                adverse movements. It is important to align duration with the
-                benchmark and maintain consistent risk management practices.
-            """,
-            "genuine": """
-                We had a 0.4yr long duration tilt going into March 2022. When
-                the curve inverted we closed half of it in the swap market
-                rather than selling bonds — the bid-ask on the physicals was
-                12 cents wide that week, the swap was 2bps. Still cost us
-                roughly 18bps on the quarter. DV01 on the long end went from
-                $420K to $180K per basis point. Under Basel III our capital
-                charge for the residual position was flagged by risk at 11am.
-            """,
-        },
-        # ── Healthcare ─────────────────────────────────────────────
-        {
-            "domain": "Healthcare — ICU",
-            "llm": """
-                Managing septic shock requires following established protocols
-                and the ABCDE approach. It is important to administer
-                intravenous fluids promptly and escalate to vasopressors when
-                indicated. Multidisciplinary team involvement ensures optimal
-                patient outcomes in critical care settings.
-            """,
-            "genuine": """
-                Patient came in with MAP of 52 despite 2L crystalloid — we
-                started norepinephrine at 0.05 mcg/kg/min and got a second
-                large-bore IV in the left AC. Lactate was 4.8, which put us
-                firmly in septic shock per Sepsis-3 criteria. PEEP was set
-                to 8 cmH2O on the ventilator after we intubated. The attending
-                wanted a central line for the vasopressors — right IJ because
-                the left subclavian had a previous line infection. O2 sat went
-                from 88% to 96% within 15 minutes of intubation.
-            """,
-        },
-        # ── Marketing ──────────────────────────────────────────────
-        {
-            "domain": "Marketing — paid acquisition",
-            "llm": """
-                Addressing rising CAC requires a comprehensive review of
-                targeting parameters and creative performance. Best practices
-                suggest conducting A/B testing and ensuring alignment between
-                media strategy and sales processes. It is recommended to
-                optimise landing page conversion rates and regularly audit
-                your attribution model for accuracy.
-            """,
-            "genuine": """
-                CAC crept from $420 to $890 over 18 months because we'd
-                exhausted our best-fit audiences and kept bidding into worse
-                segments. Our form fill to sales-qualified rate dropped from
-                22% to 11% after we broadened match types to hit volume.
-                Rolling back to phrase match recovered 14 points of conversion
-                within six weeks. We also rebuilt our lookalike seed from
-                2,000 to 8,000 verified converters — that brought CAC back to
-                $540 and ROAS from 1.8x to 3.4x on the Meta campaigns.
-            """,
-        },
-    ]
+#     test_cases = [
+#         # ── Software (original domain) ─────────────────────────────
+#         {
+#             "domain": "Software — Kafka",
+#             "llm": """
+#                 To optimize Kafka consumer throughput, I focused on tuning
+#                 fetch.min.bytes and fetch.max.wait.ms to batch messages
+#                 efficiently. I also increased consumer threads to match
+#                 partition count and monitored consumer lag using standard
+#                 metrics. I implemented a dead letter queue for poison pill
+#                 messages and ensured proper offset management.
+#             """,
+#             "genuine": """
+#                 We had consumer lag spiking to 40 minutes on our payments
+#                 topic — turned out max.poll.records was at 500 and our
+#                 deserialization was hitting a ProtobufDecodeError on 0.1%
+#                 of messages, causing the whole poll loop to retry. The OOM
+#                 kills were a red herring. Fixed it by dropping max.poll.records
+#                 to 50, routing errors to dead-letter-payments-v2, and bumping
+#                 fetch.max.wait.ms from 500 to 1000ms. p99 lag went from 40min
+#                 to 8s.
+#             """,
+#         },
+#         # ── Finance ────────────────────────────────────────────────
+#         {
+#             "domain": "Finance — fixed income",
+#             "llm": """
+#                 Managing interest rate risk requires careful duration analysis
+#                 and regular portfolio rebalancing. Generally speaking, investors
+#                 should monitor DV01 exposure and use rate swaps to hedge against
+#                 adverse movements. It is important to align duration with the
+#                 benchmark and maintain consistent risk management practices.
+#             """,
+#             "genuine": """
+#                 We had a 0.4yr long duration tilt going into March 2022. When
+#                 the curve inverted we closed half of it in the swap market
+#                 rather than selling bonds — the bid-ask on the physicals was
+#                 12 cents wide that week, the swap was 2bps. Still cost us
+#                 roughly 18bps on the quarter. DV01 on the long end went from
+#                 $420K to $180K per basis point. Under Basel III our capital
+#                 charge for the residual position was flagged by risk at 11am.
+#             """,
+#         },
+#         # ── Healthcare ─────────────────────────────────────────────
+#         {
+#             "domain": "Healthcare — ICU",
+#             "llm": """
+#                 Managing septic shock requires following established protocols
+#                 and the ABCDE approach. It is important to administer
+#                 intravenous fluids promptly and escalate to vasopressors when
+#                 indicated. Multidisciplinary team involvement ensures optimal
+#                 patient outcomes in critical care settings.
+#             """,
+#             "genuine": """
+#                 Patient came in with MAP of 52 despite 2L crystalloid — we
+#                 started norepinephrine at 0.05 mcg/kg/min and got a second
+#                 large-bore IV in the left AC. Lactate was 4.8, which put us
+#                 firmly in septic shock per Sepsis-3 criteria. PEEP was set
+#                 to 8 cmH2O on the ventilator after we intubated. The attending
+#                 wanted a central line for the vasopressors — right IJ because
+#                 the left subclavian had a previous line infection. O2 sat went
+#                 from 88% to 96% within 15 minutes of intubation.
+#             """,
+#         },
+#         # ── Marketing ──────────────────────────────────────────────
+#         {
+#             "domain": "Marketing — paid acquisition",
+#             "llm": """
+#                 Addressing rising CAC requires a comprehensive review of
+#                 targeting parameters and creative performance. Best practices
+#                 suggest conducting A/B testing and ensuring alignment between
+#                 media strategy and sales processes. It is recommended to
+#                 optimise landing page conversion rates and regularly audit
+#                 your attribution model for accuracy.
+#             """,
+#             "genuine": """
+#                 CAC crept from $420 to $890 over 18 months because we'd
+#                 exhausted our best-fit audiences and kept bidding into worse
+#                 segments. Our form fill to sales-qualified rate dropped from
+#                 22% to 11% after we broadened match types to hit volume.
+#                 Rolling back to phrase match recovered 14 points of conversion
+#                 within six weeks. We also rebuilt our lookalike seed from
+#                 2,000 to 8,000 verified converters — that brought CAC back to
+#                 $540 and ROAS from 1.8x to 3.4x on the Meta campaigns.
+#             """,
+#         },
+#     ]
 
-    for case in test_cases:
+#     for case in test_cases:
 
-        print(f"\n{'═'*60}")
-        print(f"  {case['domain']}")
-        print(f"{'═'*60}")
-        for label, text in [("LLM", case["llm"]), ("Genuine", case["genuine"])]:
-            result = scorer.score(text.strip(), "senior")
-            # print(result?)
-            print(f"\n  [{label}]")
-            print(f"    score:          {result['operational_specificity_score']}")
-            print(f"    artifact_count: {result['artifact_count']}")
-            print(f"    type_diversity: {result['type_diversity']}")
-            if result.get("top_artifacts"):
-                print(f"    top artifacts:")
-                for a in result["top_artifacts"][:3]:
-                    print(f"      [{a['type']}] {a['value']}")
-            print(f"    verdict: {result['verdict']}")
+#         print(f"\n{'═'*60}")
+#         print(f"  {case['domain']}")
+#         print(f"{'═'*60}")
+#         for label, text in [("LLM", case["llm"]), ("Genuine", case["genuine"])]:
+#             result = scorer.score(text.strip(), "senior")
+#             # print(result?)
+#             print(f"\n  [{label}]")
+#             print(f"    score:          {result['operational_specificity_score']}")
+#             print(f"    artifact_count: {result['artifact_count']}")
+#             print(f"    type_diversity: {result['type_diversity']}")
+#             if result.get("top_artifacts"):
+#                 print(f"    top artifacts:")
+#                 for a in result["top_artifacts"][:3]:
+#                     print(f"      [{a['type']}] {a['value']}")
+#             print(f"    verdict: {result['verdict']}")

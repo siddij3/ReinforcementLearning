@@ -1,24 +1,11 @@
 import torch
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
-_CACHED_LMS: Dict[str, Tuple[AutoTokenizer, AutoModelForCausalLM]] = {}
-
-
-def _load_causal_lm(model_name: str) -> Tuple[AutoTokenizer, AutoModelForCausalLM]:
-    if model_name in _CACHED_LMS:
-        return _CACHED_LMS[model_name]
-    try:
-        from .hub_auth import ensure_hf_token_for_downloads
-    except ImportError:
-        from hub_auth import ensure_hf_token_for_downloads
-    ensure_hf_token_for_downloads()
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    model.eval()
-    _CACHED_LMS[model_name] = (tokenizer, model)
-    return _CACHED_LMS[model_name]
+try:
+    from .hf_pipeline_cache import get_causal_lm as _load_causal_lm
+except ImportError:
+    from hf_pipeline_cache import get_causal_lm as _load_causal_lm
 
 
 class AnswerPerplexityScorer:
