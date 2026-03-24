@@ -221,6 +221,7 @@ class OperationalSpecificityScorer:
                 "operational_specificity_score": 0.0,
                 "artifact_count":   0,
                 "weighted_density": 0.0,
+                "type_diversity":   0.0,
                 "artifacts":        [],
                 "verdict": f"no operational artifacts for claimed {expected_seniority} level",
             }
