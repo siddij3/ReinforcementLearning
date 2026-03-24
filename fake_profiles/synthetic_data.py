@@ -29,12 +29,13 @@ from features.depth_collapse import DepthCollapseDeltaScorer
 from features.narrative_causality import NarrativeCausalityScorer
 from features.answer_perplexity import AnswerPerplexityScorer
 from features.skill_taxonomy import SkillTaxonomyScorer
+from features.git_commits import GitHubCommitArchaeologyScorer, CommitHistory
 
 @dataclass
 class SignalProcessor:
     fraud_rate: float = 0.30
-    rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(42))
-
+    rng: np.random.Generator = field(default_factory=np.random.default_rng)
+ 
     def __post_init__(self) -> None:
         
         self.skill_taxonomy_scorer = None
@@ -48,6 +49,7 @@ class SignalProcessor:
         self.depth_scorer = None
         self.narrative_scorer = None
         self.answer_perplexity_scorer = None
+        self.git_scorer = None
 
     def random_profile(self) -> LinkedInSyntheticProfile:
         is_fraud = self.rng.random() < self.fraud_rate
@@ -60,6 +62,25 @@ class SignalProcessor:
         screening_questions = profile_template.screening_questions
         screening_answers = profile_template.screening_answers
         web_signals = profile_template.web_signals
+        commit_history = profile_template.commit_history
+
+        if is_fraud:
+            commit_history = CommitHistory(
+                commits=[],
+                repos=[]
+            )
+        else:
+            commit_history = profile_template.commit_history
+        
+        web_signals = profile_template.web_signals
+        if is_fraud:
+            web_signals = {
+                "github_public_repos": 0,
+                "github_commit_recency_days": 0,
+                "stackoverflow_reputation": 0,
+                "linkedin_connections": 0,
+                "endorsement_reciprocity": 0,
+            }
 
         return LinkedInSyntheticProfile(
             is_fraud=is_fraud,
@@ -70,49 +91,10 @@ class SignalProcessor:
             timeline=timeline,
             screening_questions=screening_questions,
             screening_answers=screening_answers,
-            web_signals=web_signals
+            web_signals=web_signals,
+            commit_history=commit_history,
         )
-
     def stage_zero(self, profile: LinkedInSyntheticProfile) -> dict:
-
-        # Stage 0
-        self.skill_taxonomy_scorer = SkillTaxonomyScorer(profile_text=profile.profile_text, jd_text=profile.jd_text) if not self.skill_taxonomy_scorer else self.skill_taxonomy_scorer
-        self.timeline_scorer =  TimelineCoherenceScorer() if not self.timeline_scorer else self.timeline_scorer
-        self.career_scorer = CareerProgressionSmoothnessScorer() if not self.career_scorer else self.career_scorer
-        self.voice_scorer = ProfileVoiceConsistencyScorer() if not self.voice_scorer else self.voice_scorer
-
-        skill_taxonomy_result = self.skill_taxonomy_scorer.score()
-        skill_taxonomy = {
-            "coverage_score": skill_taxonomy_result.coverage_score,
-            "idiosyncrasy_score": skill_taxonomy_result.idiosyncrasy_score,
-            "semantic_mirror_score": skill_taxonomy_result.semantic_mirror_score,
-        }
-
-        print(skill_taxonomy)
-        timeline_coherence_result = self.timeline_scorer.score(profile.timeline)
-        timeline_coherence = {
-            "timeline_coherence_fraud_score": timeline_coherence_result["timeline_coherence_fraud_score"],
-        }
-
-        print(skill_taxonomy)
-        career_smoothness_result = self.career_scorer.score(profile.timeline)
-        career_smoothness = {
-            "career_smoothness_fraud_score": career_smoothness_result["career_smoothness_fraud_score"],
-        }
-        print(career_smoothness)
-        voice_score_result = self.voice_scorer.score(profile.sections)
-        voice_score = {
-            "profile_voice_fraud_score": voice_score_result["profile_voice_fraud_score"],
-            "soft_skill_mean_rate": voice_score_result["soft_skill_mean_rate"],
-            "soft_skill_cv": voice_score_result["soft_skill_cv"],
-            "sentence_uniformity": voice_score_result["sentence_uniformity"],
-            "tech_density_cv": voice_score_result["tech_density_cv"],
-            "voice_cluster_penalty": voice_score_result["voice_cluster_penalty"]
-        }
-        print(voice_score)
-        return {**skill_taxonomy, **timeline_coherence, **career_smoothness, **voice_score}
-
-    def stage_one(self, profile: LinkedInSyntheticProfile) -> dict:
         # Stage 1
         a1 = profile.screening_answers[0]
         
@@ -139,14 +121,13 @@ class SignalProcessor:
             "low_prob_token_fraction": answer_perplexity["low_prob_token_fraction"],
         }
 
-        # structural = self._structural_over_org(a1, profile.is_fraud)
-        # response_div = self._response_divergence(q1, a1, profile.is_fraud)
-        # token_burst = self._token_burstiness_fraud(a1_) answer perplexity.
-
+        print(narrative)
+        print(asnwer_perplexity_score)
         return {**narrative, **asnwer_perplexity_score}
 
         # Stage 2
-    def stage_two(self, profile: LinkedInSyntheticProfile) -> dict:
+    
+    def stage_one(self, profile: LinkedInSyntheticProfile) -> dict:
         a1 = profile.screening_answers[0]
         q1 = profile.screening_questions[0]
         a2 = profile.screening_answers[1]
@@ -155,10 +136,12 @@ class SignalProcessor:
         self.depth_scorer = DepthCollapseDeltaScorer() if not self.depth_scorer else self.depth_scorer
         
         depth_delta = self.depth_scorer.compute_delta(a1, q1, a2, q2)["depth_collapse_delta"]
+        print(depth_delta)
         return {"depth_collapse_delta": depth_delta}
 
         # Stage 3
-    def stage_three(self, profile: LinkedInSyntheticProfile) -> dict:
+    
+    def stage_two(self, profile: LinkedInSyntheticProfile) -> dict:
 
         self.cross_scorer = CrossAnswerConsistencyScorer() if not self.cross_scorer else self.cross_scorer
 
@@ -170,9 +153,58 @@ class SignalProcessor:
         # q2_op_fraud = self._operational_specificity_fraud(a2, profile.is_fraud)
         # operational_agg = clip(0.5 * q1_op_fraud + 0.5 * q2_op_fraud)
 
+        print(cross_answer_score)
         return cross_answer_score
+        
+    def stage_three(self, profile: LinkedInSyntheticProfile) -> dict:
 
-       
+        # Stage 0
+        self.skill_taxonomy_scorer = SkillTaxonomyScorer(profile_text=profile.profile_text, jd_text=profile.jd_text) if not self.skill_taxonomy_scorer else self.skill_taxonomy_scorer
+        self.timeline_scorer =  TimelineCoherenceScorer() if not self.timeline_scorer else self.timeline_scorer
+        self.career_scorer = CareerProgressionSmoothnessScorer() if not self.career_scorer else self.career_scorer
+        self.voice_scorer = ProfileVoiceConsistencyScorer() if not self.voice_scorer else self.voice_scorer
+
+        skill_taxonomy_result = self.skill_taxonomy_scorer.score()
+        skill_taxonomy = {
+            "coverage_score": skill_taxonomy_result.coverage_score,
+            "idiosyncrasy_score": skill_taxonomy_result.idiosyncrasy_score,
+            "semantic_mirror_score": skill_taxonomy_result.semantic_mirror_score,
+        }
+        print(skill_taxonomy)
+
+        timeline_coherence_result = self.timeline_scorer.score(profile.timeline)
+        timeline_coherence = {
+            "timeline_coherence_fraud_score": timeline_coherence_result["timeline_coherence_fraud_score"],
+        }
+
+        print(timeline_coherence)
+        career_smoothness_result = self.career_scorer.score(profile.timeline) # To Fix
+        career_smoothness = {
+            "career_smoothness_fraud_score": career_smoothness_result["career_smoothness_fraud_score"],
+        }
+        print(career_smoothness)
+        voice_score_result = self.voice_scorer.score(profile.sections)
+        voice_score = {
+            "profile_voice_fraud_score": voice_score_result["profile_voice_fraud_score"],
+            "soft_skill_mean_rate": voice_score_result["soft_skill_mean_rate"],
+            "soft_skill_cv": voice_score_result["soft_skill_cv"],
+            "sentence_uniformity": voice_score_result["sentence_uniformity"],
+            "tech_density_cv": voice_score_result["tech_density_cv"],
+            "voice_cluster_penalty": voice_score_result["voice_cluster_penalty"]
+        }
+        print(voice_score)
+        return {**skill_taxonomy, **timeline_coherence, **career_smoothness, **voice_score}
+
+    def stage_four(self, profile: LinkedInSyntheticProfile) -> dict:
+        self.git_scorer = GitHubCommitArchaeologyScorer() if not self.git_scorer else self.git_scorer
+
+        git_result = self.git_scorer.score(profile.web_signals, profile.timeline, profile.skills)
+        git_score = {
+            "github_archaeology_fraud_score": git_result.github_archaeology_fraud_score,
+        }
+        print(git_score)
+        return git_score
+
 @dataclass
 class LinkedInSyntheticProfile:
     is_fraud: bool
@@ -184,6 +216,7 @@ class LinkedInSyntheticProfile:
     screening_questions: List[str]
     screening_answers: List[str]
     web_signals: Dict[str, float]
+    commit_history: CommitHistory
 
     @property
     def sections(self) -> Dict[str, str]:
@@ -285,6 +318,10 @@ p1 = LinkedInSyntheticProfile(
         "linkedin_connections": 487.0,
         "endorsement_reciprocity": 0.72,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -373,6 +410,10 @@ p2 = LinkedInSyntheticProfile(
         "linkedin_connections": 612.0,
         "endorsement_reciprocity": 0.68,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -461,6 +502,10 @@ p3 = LinkedInSyntheticProfile(
         "linkedin_connections": 1843.0,
         "endorsement_reciprocity": 0.14,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -548,6 +593,10 @@ p4 = LinkedInSyntheticProfile(
         "medium_articles_published": 4.0,
         "speaker_event_hits": 1.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -638,6 +687,10 @@ p5 = LinkedInSyntheticProfile(
         "endorsement_reciprocity": 0.74,
         "speaker_event_hits": 2.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -731,6 +784,10 @@ p6 = LinkedInSyntheticProfile(
         "linkedin_connections": 708.0,
         "endorsement_reciprocity": 0.65,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -819,6 +876,10 @@ p7 = LinkedInSyntheticProfile(
         "endorsement_reciprocity": 0.09,
         "etherscan_verified_contracts": 0.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -906,6 +967,10 @@ p8 = LinkedInSyntheticProfile(
         "cpa_license_verified": 1.0,
         "speaker_event_hits": 0.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -1000,6 +1065,10 @@ p9 = LinkedInSyntheticProfile(
         "endorsement_reciprocity": 0.70,
         "cve_credits": 5.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -1089,6 +1158,10 @@ p10 = LinkedInSyntheticProfile(
         "salesforce_trailhead_badges": 0.0,
         "speaker_event_hits": 0.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -1182,6 +1255,10 @@ p11 = LinkedInSyntheticProfile(
         "cpim_certified": 1.0,
         "speaker_event_hits": 0.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
 
@@ -1275,13 +1352,1115 @@ p12 = LinkedInSyntheticProfile(
         "databricks_certified": 0.0,
         "speaker_event_hits": 0.0,
     },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
 )
 
+
+p33 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Community food security nonprofit (budget: $4.2 M, 28 staff, 3 service sites) seeks "
+        "an Executive Director with demonstrated fundraising success, government contract "
+        "management, and board governance experience. Must have 7+ years nonprofit leadership; "
+        "hunger-relief or social services background strongly preferred."
+    ),
+    summary=(
+        "Nonprofit executive with 12 years in food security and community services, the last "
+        "five as an ED. I moved into leadership because I got tired of watching good programmes "
+        "close for avoidable financial reasons. My priorities are a diversified revenue base, "
+        "a board that actually governs, and staff who stay long enough to become experts. "
+        "I'm comfortable at a gala dinner and in a city council budget hearing on the same day."
+    ),
+    experiences=[
+        {
+            "title": "Executive Director",
+            "org": "Eastside Food Network",
+            "description": (
+                "Lead a 28-staff organisation operating three food pantries, a mobile market "
+                "serving 11 low-access ZIP codes, and a SNAP outreach programme. Grew annual "
+                "budget from $2.1 M to $4.2 M over five years through a federal Emergency Food "
+                "Assistance Program (TEFAP) contract ($820 k), a USDA SNAP-Ed grant ($310 k), "
+                "and a major gifts programme that went from $0 to $480 k/year. "
+                "Reduced client wait time from 38 min to 12 min by redesigning pantry flow "
+                "and adding a client-choice model; monthly client visits grew 41% without "
+                "adding square footage. Recruited and onboarded 8 board members with targeted "
+                "skills gaps in legal, finance, and community voice. Staff two-year retention "
+                "rate improved from 54% to 81%."
+            ),
+        },
+        {
+            "title": "Director of Programs",
+            "org": "Millbrook Community Action Agency",
+            "description": (
+                "Managed a $1.6 M portfolio of 9 programmes across food, housing stabilisation, "
+                "and emergency utility assistance. Wrote and won four competitive grants totalling "
+                "$620 k over three years. Led a ROMA (Results-Oriented Management and Accountability) "
+                "implementation across all programmes; produced the agency's first outcomes report "
+                "that was subsequently used in two successful renewal applications. "
+                "Supervised a team of 11 programme staff."
+            ),
+        },
+        {
+            "title": "Case Manager / Programme Coordinator",
+            "org": "Riverside Hunger Relief",
+            "description": (
+                "Managed caseloads of 60–80 households in a pantry-plus-case-management model. "
+                "Co-designed a food prescription pilot with two partner clinics that enrolled "
+                "34 clients with diet-related chronic disease in year 1; 71% reported improved "
+                "dietary adherence at 6-month follow-up. Trained 40 pantry volunteers annually."
+            ),
+        },
+    ],
+    skills=[
+        "Executive Leadership", "Nonprofit Fundraising (Major Gifts, Grants)", "TEFAP / USDA Contracts",
+        "Board Governance", "Programme Evaluation (ROMA)", "Staff Development & Retention",
+        "Community Engagement", "Budget Management ($4 M+)", "SNAP Outreach",
+        "Coalition Building", "Media & Public Relations",
+    ],
+    timeline=[
+        TimelineEntry("Case Manager / Programme Coordinator", "Riverside Hunger Relief",         datetime(2012, 8, 1),  datetime(2016, 5, 1)),
+        TimelineEntry("Director of Programs",                 "Millbrook Community Action Agency",datetime(2016, 6, 1),  datetime(2019, 10, 1)),
+        TimelineEntry("Executive Director",                   "Eastside Food Network",            datetime(2019, 11, 1), None),
+    ],
+    screening_questions=[
+        "How do you approach revenue diversification when a single government contract represents 40% of your budget?",
+        "Describe a time you had to have a difficult conversation with a board member.",
+    ],
+    screening_answers=[
+        (
+            "At Eastside, our TEFAP contract was 39% of revenue when I arrived. My first move "
+            "was to map the risk: government food contracts are relatively stable but politically "
+            "exposed, and ours was renewable annually. Over three years I treated every funder "
+            "conversation as a portfolio decision—deliberately not renewing two small restricted "
+            "grants that required disproportionate reporting, and reinvesting that staff capacity "
+            "into a major gifts programme. I set a self-imposed ceiling of 25% from any single "
+            "source and shared that target with the board in writing so they could hold me to it. "
+            "We're at 19% government, 23% foundation, 22% individual, and 36% earned/in-kind today."
+        ),
+        (
+            "A board chair at Millbrook was cc'ing himself on staff emails and calling programme "
+            "managers directly to ask about operational decisions—classic boundary erosion. "
+            "I requested a private meeting, brought our governance policies, and walked through "
+            "the distinction between board oversight and staff management with specific examples "
+            "of where his involvement had created confusion. He was not pleased. I held the "
+            "position, offered to put a quarterly operational briefing on the board calendar "
+            "so he had a legitimate channel for curiosity, and followed up in writing. "
+            "The behaviour stopped within a month. The relationship recovered within three."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 521.0,
+        "endorsement_reciprocity": 0.66,
+        "990_filing_verifiable": 1.0,
+        "grant_database_hits": 4.0,
+        "speaker_event_hits": 3.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 34 ── Commercial Real Estate Broker (Legitimate) ───────────────
+# ===========================================================================
+p34 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Tenant-rep brokerage seeking a Senior Associate or VP with 5+ years of commercial "
+        "office and industrial transaction experience. Must demonstrate a consistent deal "
+        "volume track record, strong landlord and ownership relationships, and the ability "
+        "to manage multi-market portfolio requirements for corporate clients."
+    ),
+    summary=(
+        "Commercial broker with 9 years focused on tenant representation—office and industrial "
+        "leasing, portfolio restructuring, and build-to-suit advisory. My competitive edge is "
+        "preparation: I underwrite every option a client considers using the same model so "
+        "comparisons are apples-to-apples, and I run lease abstracts in-house rather than "
+        "sending clients a broker opinion dressed up as analysis. Clients stay because "
+        "I tell them what I would do if it were my lease, not what maximises my commission."
+    ),
+    experiences=[
+        {
+            "title": "Vice President, Tenant Advisory",
+            "org": "Cornerstone Commercial Advisors",
+            "description": (
+                "Completed 34 transactions (aggregate 1.1 M SF) over four years, representing "
+                "tenants exclusively in office and industrial markets across 6 metros. Largest "
+                "transaction: 112,000 SF distribution centre lease for a 3PL client, negotiated "
+                "14 months of free rent and a $4.2 M tenant improvement allowance against a "
+                "landlord opening position of $1.8 M TI. Retained 11 of 12 clients through lease "
+                "cycle renewal; average client relationship tenure: 5.3 years. "
+                "Mentored two junior associates; both promoted to Associate within 24 months."
+            ),
+        },
+        {
+            "title": "Associate, Office Leasing",
+            "org": "Hallmark Realty Group",
+            "description": (
+                "Built a 40-client tenant-rep book from cold outreach over three years. "
+                "Closed 22 transactions (230,000 SF aggregate). Developed a lease comparison "
+                "model in Excel that standardised how the team presented occupancy cost "
+                "across options—adopted by the full 12-broker office team. Earned CCIM "
+                "designation in year 3."
+            ),
+        },
+        {
+            "title": "Research Analyst",
+            "org": "Vantage Market Intelligence",
+            "description": (
+                "Produced quarterly market reports for 4 metro office and industrial markets. "
+                "Built the firm's absorption and vacancy trend database (CoStar + proprietary "
+                "survey data) used in broker pitches and client advisory. Obtained state real "
+                "estate licence during tenure."
+            ),
+        },
+    ],
+    skills=[
+        "Tenant Representation", "Office & Industrial Leasing", "Lease Negotiation",
+        "Portfolio Advisory", "CCIM Designation", "CoStar / CBRE EA", "Lease Abstracting",
+        "Occupancy Cost Modelling", "Build-to-Suit Advisory", "Multi-Market Transactions",
+        "Client Retention", "Market Research",
+    ],
+    timeline=[
+        TimelineEntry("Research Analyst",       "Vantage Market Intelligence",    datetime(2015, 7, 1),  datetime(2017, 5, 1)),
+        TimelineEntry("Associate, Office Leasing","Hallmark Realty Group",         datetime(2017, 6, 1),  datetime(2020, 8, 1)),
+        TimelineEntry("VP, Tenant Advisory",     "Cornerstone Commercial Advisors",datetime(2020, 9, 1),  None),
+    ],
+    screening_questions=[
+        "Walk me through how you negotiate a tenant improvement allowance when the landlord's opening offer is far below market.",
+        "How do you structure a lease comparison for a client evaluating five options across two markets?",
+    ],
+    screening_answers=[
+        (
+            "The first step is establishing the market. I pull the last 8–10 comparable deals "
+            "from CoStar and supplement with two off-market comps I know from direct landlord "
+            "conversations—the published comps are often the landlord's best day. I present "
+            "that data to the client first, before we go back to the landlord, so the client "
+            "understands what we're asking for and why. Then I anchor high in writing: my "
+            "response letter names the comparable TI range and ties it to the specific "
+            "improvement scope. On the 3PL deal, we opened at $5.8 M; they countered at $2.4 M. "
+            "We ended at $4.2 M by demonstrating that their competing tenant—a deal they'd "
+            "publicised—received $3.9 M for a smaller space. Comparable data is the argument."
+        ),
+        (
+            "I build a single Excel model where every option is evaluated on a net present "
+            "cost basis using the client's own discount rate, not a brokerage assumption. "
+            "The model spits out: annual occupancy cost per SF, total 10-year NPV, free-rent-adjusted "
+            "effective rent, and a sensitivity table on lease term. I then add three qualitative "
+            "scores the client rates themselves—location fit, parking, expansion optionality. "
+            "The output is a one-page scorecard. Clients do not make better decisions from "
+            "84-page pitch books; they make better decisions when the numbers are comparable "
+            "and the trade-offs are explicit."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 734.0,
+        "endorsement_reciprocity": 0.59,
+        "ccim_designation_verified": 1.0,
+        "costar_deal_record_hits": 31.0,
+        "re_license_verified": 1.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+
+ 
+# ===========================================================================
+# ── PROFILE 35 ── Speech-Language Pathologist (Legitimate) ─────────────────
+# ===========================================================================
+p35 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Acute care hospital (580 beds) seeks a Speech-Language Pathologist with ASHA CCC-SLP "
+        "and 3+ years of medical SLP experience. Dysphagia evaluation and management required, "
+        "including MBSS and FEES experience. Tracheostomy and ventilator-dependent patient "
+        "experience strongly preferred. ASHA-certified clinical supervisor a plus."
+    ),
+    summary=(
+        "Medical speech-language pathologist with 8 years in acute care and inpatient rehab, "
+        "specialising in dysphagia, acquired neurogenic communication disorders, and "
+        "tracheostomy/ventilator management. I hold both MBSS and FEES competency and have "
+        "supervised the dysphagia programme at my current hospital for the past three years. "
+        "My practice philosophy is the same across every patient: the least restrictive diet "
+        "that the evidence supports, because eating is not just nutrition—it is dignity."
+    ),
+    experiences=[
+        {
+            "title": "Senior SLP – Acute Care & Inpatient Rehab",
+            "org": "St. Calloway Medical Centre",
+            "description": (
+                "Evaluate and treat adults with dysphagia, aphasia, dysarthria, cognitive-"
+                "communication disorders, and tracheostomy-related communication needs across "
+                "a 200-bed acute care unit and 60-bed inpatient rehab facility. "
+                "Conduct ~14 MBSS studies/month (joint with Radiology) and ~6 FEES procedures. "
+                "Programme lead for the hospital dysphagia committee: updated nil-per-os (NPO) "
+                "criteria using IDDSI framework, reducing inappropriate NPO orders by 34% "
+                "(pre-audit: 61 NPO orders/quarter without SLP consult; post: 40). "
+                "Primary clinical supervisor for 2 CF-SLP fellows per year; 100% pass rate "
+                "on all supervised competency sign-offs. Received 'Excellence in Clinical Care' "
+                "award in 2022."
+            ),
+        },
+        {
+            "title": "SLP – Acute Care",
+            "org": "Ridgeview General Hospital",
+            "description": (
+                "Provided SLP services across ICU, medical-surgical, neurology, and "
+                "oncology units in a 340-bed hospital. Managed tracheostomy weaning in "
+                "collaboration with pulmonology; co-developed a Passy-Muir Valve weaning "
+                "protocol adopted hospital-wide. Completed FEES competency training (2019). "
+                "Treated an average caseload of 9–12 patients/day."
+            ),
+        },
+        {
+            "title": "SLP Clinical Fellow",
+            "org": "Northgate Rehabilitation Hospital",
+            "description": (
+                "9-month clinical fellowship in an inpatient rehab setting. Treated stroke, "
+                "TBI, and neurodegenerative populations. Completed MBSS competency requirements. "
+                "Successfully obtained ASHA CCC-SLP at fellowship completion."
+            ),
+        },
+    ],
+    skills=[
+        "Dysphagia Evaluation & Management", "Modified Barium Swallow Study (MBSS)",
+        "Fiberoptic Endoscopic Evaluation of Swallowing (FEES)", "IDDSI Framework",
+        "Tracheostomy & Vent Management", "Aphasia / Neurogenic Communication",
+        "ASHA CCC-SLP", "Clinical Supervision (CF-SLP)", "Passy-Muir Valve",
+        "Cognitive-Communication Disorders", "Epic EMR",
+    ],
+    timeline=[
+        TimelineEntry("SLP Clinical Fellow",      "Northgate Rehabilitation Hospital",datetime(2016, 8, 1),  datetime(2017, 5, 1)),
+        TimelineEntry("SLP – Acute Care",          "Ridgeview General Hospital",       datetime(2017, 6, 1),  datetime(2021, 3, 1)),
+        TimelineEntry("Senior SLP – Acute Care",   "St. Calloway Medical Centre",      datetime(2021, 4, 1),  None),
+    ],
+    screening_questions=[
+        "How do you approach the NPO decision for a patient with silent aspiration on MBSS?",
+        "Walk me through your process for initiating Passy-Muir Valve trials in a tracheostomy patient.",
+    ],
+    screening_answers=[
+        (
+            "Silent aspiration changes the conversation but does not automatically mean NPO. "
+            "I look at four factors: the material aspirated (thin liquid vs. nectar vs. puree), "
+            "the penetration-aspiration scale score, the patient's pulmonary reserve and cough "
+            "reflex integrity, and their informed preferences. A patient with silent aspiration "
+            "of thin liquids but strong pulmonary clearance, no pneumonia history, and a strong "
+            "expressed wish to eat may be a reasonable candidate for a compensatory strategy "
+            "trial—chin tuck, straw elimination, thickened liquids—before I recommend NPO. "
+            "I document the clinical reasoning, involve the team and family in the decision, "
+            "and set a clear re-evaluation schedule. NPO should be a considered clinical "
+            "decision, not the default response to an abnormal swallow study."
+        ),
+        (
+            "Before any PMV trial, I confirm with the team that the cuff can be deflated—"
+            "full cuff deflation is non-negotiable for safe PMV use, so I check the airway "
+            "with pulmonology if there is any concern about tolerance. I then do a cuff-deflated "
+            "assessment first, without the valve: I'm listening for audible airflow past the "
+            "cords, watching work of breathing, and checking SpO2 at 1, 3, and 5 minutes. "
+            "If the patient tolerates deflation for 5 minutes, I introduce the PMV, starting "
+            "with short trials of 5–15 minutes and building duration over sessions. I document "
+            "tolerance, voice quality, and any secretion management concerns at each trial. "
+            "Rushing the process creates risk; the PMV is a rehabilitation tool, not a milestone."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 243.0,
+        "endorsement_reciprocity": 0.68,
+        "asha_ccc_verified": 1.0,
+        "fees_competency_verified": 1.0,
+        "poster_presentation_verified": 1.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 36 ── Transportation Civil Engineer, P.E. (Legitimate) ─────────
+# ===========================================================================
+p36 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Engineering consultancy seeks a P.E.-licensed Transportation Engineer with 6–10 years "
+        "of experience in roadway and intersection design, traffic impact analysis, and "
+        "public-agency project delivery. MUTCD expertise required. Experience with Caltrans or "
+        "FHWA federal-aid projects a plus. AutoCAD Civil 3D and Synchro proficiency required."
+    ),
+    summary=(
+        "Transportation civil engineer with 10 years designing roadways, intersections, and "
+        "active transportation infrastructure. I've worked both sides of the desk—three years "
+        "in county government before moving to consulting—and I think the government stint made "
+        "me a better consultant: I understand why plan check comments look the way they do and "
+        "I write submittals that answer the reviewer's question before they ask it. My licence "
+        "covers CA, and I've delivered 18 federal-aid projects under Caltrans Local Assistance."
+    ),
+    experiences=[
+        {
+            "title": "Senior Transportation Engineer",
+            "org": "Pacific Traffic & Civil Consultants",
+            "description": (
+                "Project engineer of record on 18 completed federal-aid projects including "
+                "two signalised intersection upgrades, a 3.2-mile Class IV separated bikeway, "
+                "and a roundabout conversion that reduced injury collisions at the intersection "
+                "by 72% in the two years post-opening (baseline: 11 injury collisions/2 years; "
+                "post: 3). Led traffic impact analyses for projects ranging from a 180-unit "
+                "residential development to a 420,000 SF warehouse. Managed subconsultant "
+                "teams on 6 concurrent projects; on-time delivery rate: 89% within original "
+                "schedule. Prepared and reviewed PS&E packages to Caltrans Local Assistance "
+                "standards; zero first-review rejections on last 9 submittals."
+            ),
+        },
+        {
+            "title": "Associate Transportation Engineer",
+            "org": "Aldren County Public Works",
+            "description": (
+                "In-house engineer for a county road system of 840 lane-miles. Managed the "
+                "county's Traffic Safety Programme: analysed 5 years of collision data using "
+                "SWITRS, prioritised 14 high-collision locations, and secured $2.1 M in HSIP "
+                "funding for countermeasure implementation. Passed P.E. exam (Civil, Traffic "
+                "Specialty) in 2018. Developed the county's first bicycle and pedestrian plan "
+                "chapter adopted into the General Plan."
+            ),
+        },
+        {
+            "title": "Junior Civil Engineer",
+            "org": "Meridian Engineering Associates",
+            "description": (
+                "Traffic impact studies, sight-distance analyses, and signing and striping "
+                "plans for residential and commercial projects. Supported PS&E preparation "
+                "for a Caltrans-administered local road rehabilitation project. Completed EIT "
+                "registration in first month."
+            ),
+        },
+    ],
+    skills=[
+        "AutoCAD Civil 3D", "Synchro / SimTraffic", "MUTCD", "Caltrans Local Assistance (LAPM)",
+        "Federal-Aid Project Delivery", "Traffic Impact Analysis", "Roundabout Design",
+        "HSIP Grant Writing", "SWITRS Collision Analysis", "Active Transportation Design",
+        "P.E. Licensed (CA – Traffic)", "PS&E Preparation",
+    ],
+    timeline=[
+        TimelineEntry("Junior Civil Engineer",        "Meridian Engineering Associates", datetime(2014, 6, 1),  datetime(2016, 11, 1)),
+        TimelineEntry("Associate Transportation Eng.", "Aldren County Public Works",      datetime(2016, 12, 1), datetime(2020, 3, 1)),
+        TimelineEntry("Senior Transportation Engineer","Pacific Traffic & Civil",         datetime(2020, 4, 1),  None),
+    ],
+    screening_questions=[
+        "Walk me through how you deliver a Caltrans federal-aid project without a first-review rejection.",
+        "How do you determine whether a roundabout is the right solution at a problem intersection?",
+    ],
+    screening_answers=[
+        (
+            "Rejections almost always come from three sources: incomplete environmental "
+            "clearance documentation, PS&E that doesn't meet Caltrans standard plan requirements, "
+            "or right-of-way certification errors. My process starts at kickoff: I pull the "
+            "Local Assistance Procedures Manual checklist and assign an internal owner to every "
+            "item before we touch design. For environmental, I loop in our CEQA/NEPA sub at "
+            "project initiation so clearance isn't on the critical path at the 65% submittal. "
+            "At 95%, I do a full plan-check read-through using the Caltrans reviewer's own "
+            "checklist—it's public—before we submit. The last nine projects came back with "
+            "comments but no rejections, which in Caltrans Local Assistance terms means "
+            "we stayed on schedule."
+        ),
+        (
+            "I start with the collision history. Roundabouts outperform signals on angle and "
+            "left-turn collisions, which are the high-severity crash types; if the intersection "
+            "has a pattern of those, the roundabout moves up the list. Then I look at volume "
+            "balance: multi-lane roundabouts work well when approach volumes are roughly "
+            "balanced across legs—a highly skewed major/minor street usually favours a "
+            "signal. I also run the Synchro comparison at the 20-year horizon, because "
+            "a roundabout that works today at low volume needs to work at projected build-out "
+            "too. The Aldren County intersection I converted had 11 injury crashes in 2 years, "
+            "balanced volumes, and no pedestrian crossing demand that would require a separate "
+            "signal phase—classic roundabout candidate. The data made the case to the community "
+            "better than any presentation could."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 318.0,
+        "endorsement_reciprocity": 0.61,
+        "pe_license_verified": 1.0,
+        "ite_member_verified": 1.0,
+        "hsip_grant_record_hits": 1.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 37 ── Hotel General Manager (Legitimate) ───────────────────────
+# ===========================================================================
+p37 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Full-service independent hotel (210 rooms, 2 F&B outlets, event space) seeks a General "
+        "Manager with 5+ years of hotel GM or EAM experience. Must demonstrate strong GOP "
+        "performance, RevPAR index growth, and team development track record. Brand-agnostic "
+        "candidates welcome; independent hotel experience preferred."
+    ),
+    summary=(
+        "Hotel general manager with 13 years in full-service properties and 6 as a GM. "
+        "My background is rooms and revenue before it was F&B and events, so I tend to "
+        "look at the P&L from the rate side first and ask whether the cost side is chasing "
+        "the right problem. I've managed through a brand flag transition, a $9 M renovation, "
+        "and a pandemic. None of those taught me as much as watching a great front desk agent "
+        "turn a complaint into a loyalty moment."
+    ),
+    experiences=[
+        {
+            "title": "General Manager",
+            "org": "The Hargrove Hotel (Independent)",
+            "description": (
+                "Lead a 210-room independent full-service hotel with 2 F&B outlets, 8,000 SF "
+                "of event space, and 74 FTE staff. Grew RevPAR index (RGI) from 0.91 to 1.14 "
+                "against the comp set over four years through revenue management discipline: "
+                "implemented a daily pick-up call, tightened discount rate controls, and "
+                "introduced a direct booking incentive that grew direct-channel revenue from "
+                "18% to 31% of room nights. Hotel TripAdvisor ranking: #3 of 28 in market "
+                "(was #17 on arrival). GOP margin improved from 24.1% to 31.8%. "
+                "Led a $9 M guestroom renovation delivered 12 days ahead of schedule and "
+                "$140 k under budget. Staff annual turnover: 38% vs. market average of 61%."
+            ),
+        },
+        {
+            "title": "Executive Assistant Manager – Rooms",
+            "org": "Aldsworth Hotel & Conference Centre",
+            "description": (
+                "Oversaw front office, housekeeping, engineering, and revenue management for "
+                "a 320-room full-service property. Drove ADR from $148 to $171 over two years "
+                "through yield management training and OTA rate parity enforcement. Reduced "
+                "housekeeping labour cost per occupied room from $24.10 to $19.80 by redesigning "
+                "room attendant cart routes and introducing a productivity incentive programme. "
+                "Managed 62 rooms-division staff across 3 departments."
+            ),
+        },
+        {
+            "title": "Front Office Manager",
+            "org": "Riverside Suites Hotel",
+            "description": (
+                "Managed a 12-person front desk and guest services team at a 180-room extended-"
+                "stay property. Guest satisfaction (J.D. Power check-in index) improved from "
+                "74th to 91st percentile in 18 months. Designed a lost-and-found tracking "
+                "system that reduced guest complaints about unreturned items by 80%."
+            ),
+        },
+    ],
+    skills=[
+        "Hotel P&L Management", "Revenue Management (RevPAR / RGI)", "OTA & Direct Channel Strategy",
+        "F&B Operations Oversight", "Event Sales & Catering", "Staff Development & Retention",
+        "Capital Project Management", "Opera PMS / Salesforce CRM", "TripAdvisor / OTA Reputation",
+        "Brand Standards (Independent)", "Labour Cost Management",
+    ],
+    timeline=[
+        TimelineEntry("Front Office Manager",           "Riverside Suites Hotel",            datetime(2011, 3, 1),  datetime(2014, 9, 1)),
+        TimelineEntry("Executive Assistant Manager – Rooms","Aldsworth Hotel & Conference Centre",datetime(2014, 10, 1), datetime(2018, 6, 1)),
+        TimelineEntry("General Manager",                "The Hargrove Hotel",                datetime(2018, 7, 1),  None),
+    ],
+    screening_questions=[
+        "How do you manage a revenue management strategy for an independent hotel without a brand system behind you?",
+        "Tell me about a staff culture problem you inherited and how you addressed it.",
+    ],
+    screening_answers=[
+        (
+            "Without a brand RMS, I build discipline around process instead. Every morning at "
+            "8:15 I run a 20-minute pick-up call with the rooms manager and whoever handles "
+            "reservations: we look at pace vs. the same period last year, versus the comp set "
+            "on STR, and at what our top three OTAs are doing on rate. Rate decisions happen "
+            "there, not when a request comes in. I also have firm rules on discount controls: "
+            "any rate below a floor that I set by season requires my approval. At the Hargrove, "
+            "the prior GM had left open-ended corporate rates that were being booked for leisure "
+            "travel on weekends. Closing that alone recovered about $140 k in annualised ADR."
+        ),
+        (
+            "At the Hargrove I inherited a housekeeping department where the director and the "
+            "two supervisors weren't speaking to each other—scheduling disputes had calcified "
+            "into personal conflict. My first two weeks I worked a housekeeping shift myself "
+            "every other morning—I wasn't inspecting, I was present. Then I met with each of "
+            "the three individually, asked them to describe the problem without naming the "
+            "others, and found that the root issue was a scheduling matrix that created "
+            "predictable conflict over who covered weekends. I redesigned the schedule with "
+            "input from all three, introduced a rotating weekend lead role, and held a single "
+            "joint meeting to walk through the new structure. The dynamic didn't fix overnight, "
+            "but within 90 days turnover in that department dropped from monthly to zero for "
+            "a six-month stretch."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 448.0,
+        "endorsement_reciprocity": 0.62,
+        "tripadvisor_ranking_verified": 1.0,
+        "str_report_referenced": 1.0,
+        "ahla_member_verified": 1.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 38 ── Licensed Clinical Social Worker (Legitimate) ─────────────
+# ===========================================================================
+p38 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "Community mental health agency seeks a LCSW for outpatient adults and families. "
+        "Must have experience with trauma-informed care, co-occurring mental health and "
+        "substance use disorders, and Medi-Cal / Medicaid documentation requirements. "
+        "Experience with Latinx communities and bilingual (Spanish) capacity strongly preferred. "
+        "Field supervision license (LCSW-S) a plus."
+    ),
+    summary=(
+        "Licensed Clinical Social Worker with 9 years of post-MSW experience, all of it in "
+        "community mental health settings serving low-income and predominantly Latinx communities. "
+        "I've supervised MSW interns for four years and I think about supervision the way I "
+        "think about therapy: the relationship is the intervention. My clinical grounding is "
+        "trauma-informed CBT and motivational interviewing, and my documentation is always "
+        "current because I've seen what happens to continuity of care when it isn't."
+    ),
+    experiences=[
+        {
+            "title": "Senior LCSW / Clinical Supervisor",
+            "org": "Puente Community Wellness Centre",
+            "description": (
+                "Carry a 22-client weekly caseload (adults and families) with presenting concerns "
+                "including PTSD, major depression, anxiety, and co-occurring alcohol and cannabis "
+                "use disorders. All services delivered in Spanish. Use trauma-informed CBT, "
+                "Motivational Interviewing, and Seeking Safety as primary modalities. "
+                "PHQ-9 outcomes tracked at every session: average 8.3-point reduction across "
+                "completed CBT episodes (n = 61, 2022–2024). Field supervisor for 3 MSW interns "
+                "per academic year; all 9 supervised interns over 3 years passed ASWB exam "
+                "on first attempt. Led agency's Medi-Cal documentation compliance review; "
+                "identified and corrected a billing code error pattern costing the agency "
+                "an estimated $28 k/year in Medi-Cal underpayments."
+            ),
+        },
+        {
+            "title": "LCSW – Adult Outpatient",
+            "org": "Eastside Behavioral Health Clinic",
+            "description": (
+                "Full caseload of 32 adults presenting with mood disorders, psychosis, and "
+                "co-occurring SUD in a Federally Qualified Health Centre (FQHC). Completed "
+                "Motivational Interviewing training (MINT-certified, 2020). "
+                "Member of the agency's Zero Suicide implementation team; contributed to "
+                "safety planning protocol now used across 4 clinic sites. "
+                "Obtained LCSW license at 24 months post-MSW."
+            ),
+        },
+        {
+            "title": "MSW Intern / Associate Social Worker",
+            "org": "Riverside County Department of Mental Health",
+            "description": (
+                "Field placement and subsequent associate employment in an adult outpatient "
+                "clinic. Managed a caseload of 18 clients under LCSW supervision. "
+                "Completed 3,200 supervised hours required for LCSW licensure. "
+                "Crisis intervention on 6 involuntary hold evaluations over 18 months."
+            ),
+        },
+    ],
+    skills=[
+        "Trauma-Informed CBT", "Motivational Interviewing (MINT-Certified)", "Seeking Safety",
+        "Co-occurring Disorders", "Medi-Cal / Medicaid Documentation", "LCSW Field Supervision",
+        "PHQ-9 / GAD-7 Outcome Tracking", "Zero Suicide Framework", "Crisis Intervention (5150)",
+        "Bilingual Spanish / English", "FQHC Billing & Compliance",
+    ],
+    timeline=[
+        TimelineEntry("MSW Intern / Associate SW",    "Riverside County Dept. of Mental Health", datetime(2015, 9, 1),  datetime(2017, 10, 1)),
+        TimelineEntry("LCSW – Adult Outpatient",      "Eastside Behavioral Health Clinic",       datetime(2017, 11, 1), datetime(2021, 6, 1)),
+        TimelineEntry("Senior LCSW / Clinical Supervisor","Puente Community Wellness Centre",    datetime(2021, 7, 1),  None),
+    ],
+    screening_questions=[
+        "How do you approach treatment when a client's substance use is actively interfering with their depression care?",
+        "Describe a documentation or billing compliance issue you identified and how you resolved it.",
+    ],
+    screening_answers=[
+        (
+            "I don't treat them as separate tracks. Motivational Interviewing gives me a way "
+            "to hold both simultaneously without the client feeling lectured. In the first "
+            "sessions I do a detailed functional analysis—when does the drinking happen, what "
+            "does it regulate, what does the depression look like on drinking days versus not. "
+            "For most of my clients the SUD is a downstream coping response to untreated trauma "
+            "or depression, and Seeking Safety gives us a structured, non-shame-based way to "
+            "address both. I set a shared goal with the client and revisit it every six sessions: "
+            "not 'stop drinking' but 'what would your life look like if the alcohol weren't "
+            "in the way?' I've found that question opens more doors than any psychoeducation."
+        ),
+        (
+            "At Puente, I noticed during a routine chart review that a colleague had been "
+            "billing H2019 for case management contacts that met criteria for H0004 individual "
+            "therapy—a lower reimbursement code. It wasn't fraud, it was a misread of the "
+            "Medi-Cal billing guide during onboarding. I flagged it to the clinical director "
+            "first, then worked with the billing team to audit 6 months of claims. We identified "
+            "the scope, submitted a voluntary self-disclosure to our Medi-Cal plan, and corrected "
+            "the coding going forward. I then built a one-page billing code reference card for "
+            "outpatient contacts that we now review with every new clinician at orientation."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 231.0,
+        "endorsement_reciprocity": 0.71,
+        "lcsw_license_verified": 1.0,
+        "mint_certification_verified": 1.0,
+        "nasw_member_verified": 1.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 39 ── Epidemiologist / Public Health Researcher (Legitimate) ────
+# ===========================================================================
+p39 = LinkedInSyntheticProfile(
+    is_fraud=False,
+    jd_text=(
+        "State health department seeks a PhD or MPH epidemiologist (5+ years) to lead "
+        "chronic disease surveillance, outbreak investigation, and applied research. "
+        "Proficiency in SAS or R required; experience with BRFSS, OSHPD, or similar "
+        "surveillance datasets expected. Grant writing and peer-reviewed publication "
+        "track record preferred."
+    ),
+    summary=(
+        "Epidemiologist with 10 years in applied public health, split between academia and "
+        "state government. My methods home is social epidemiology and chronic disease "
+        "surveillance, but I've run foodborne outbreak investigations and built syndromic "
+        "surveillance dashboards—the breadth comes from working in a state office where "
+        "the phone doesn't ask whether the problem fits your specialty. I write grants that "
+        "get funded (8 of 11 submitted, $4.1 M total) and papers that get cited (h-index: 12)."
+    ),
+    experiences=[
+        {
+            "title": "Chronic Disease Epidemiologist",
+            "org": "State Department of Public Health – Division of Chronic Disease",
+            "description": (
+                "Lead epidemiologist for the state's cardiovascular disease and diabetes "
+                "surveillance programme. Oversee annual BRFSS analysis and produce the state "
+                "chronic disease burden report distributed to 220 local health jurisdictions. "
+                "Built an R-based automated reporting pipeline that reduced report production "
+                "time from 14 weeks to 3 weeks and eliminated 4 manual data-transfer steps. "
+                "Secured two CDC-funded cooperative agreements ($1.4 M combined) for the "
+                "Diabetes Prevention Programme expansion and a rural cardiovascular disparity study. "
+                "Led a foodborne illness cluster investigation (Salmonella Typhimurium, 34 cases) "
+                "in collaboration with the local health department and FDA; source identified in "
+                "9 days. First-authored 4 peer-reviewed publications in the role; co-authored 3."
+            ),
+        },
+        {
+            "title": "Postdoctoral Research Fellow – Epidemiology",
+            "org": "Whitmore School of Public Health",
+            "description": (
+                "Two-year fellowship in social epidemiology. Analysed linked administrative data "
+                "(Medicaid claims + vital statistics) to examine neighbourhood poverty effects on "
+                "preterm birth in a cohort of 280,000 births. Published 3 first-author papers; "
+                "one was cited 140+ times within 3 years. Taught one graduate seminar per "
+                "semester (Epi Methods II). Presented at APHA Annual Meeting (2018, 2019)."
+            ),
+        },
+        {
+            "title": "Doctoral Researcher",
+            "org": "Thornfield University – Dept. of Epidemiology",
+            "description": (
+                "Dissertation: 'Structural Racism and Hypertension Prevalence in Urban US Adults: "
+                "A Multi-City Analysis Using NHANES and Area Deprivation Index.' SAS, R, and "
+                "Stata. Two dissertation papers published pre-defence. Completed PhD in 4.5 years; "
+                "defended December 2016."
+            ),
+        },
+    ],
+    skills=[
+        "Chronic Disease Surveillance (BRFSS, NHANES)", "R / SAS / Stata",
+        "Outbreak Investigation", "Social Epidemiology", "Grant Writing (CDC, NIH mechanisms)",
+        "Peer-Reviewed Publication", "Syndromic Surveillance", "Medicaid Claims Data Analysis",
+        "Spatial Analysis (ArcGIS)", "Applied Regression & Survival Analysis",
+        "Public Health Reporting", "IRB Protocol Development",
+    ],
+    timeline=[
+        TimelineEntry("Doctoral Researcher",        "Thornfield University – Epi",              datetime(2012, 9, 1),  datetime(2016, 12, 1)),
+        TimelineEntry("Postdoctoral Research Fellow","Whitmore School of Public Health",         datetime(2017, 1, 1),  datetime(2019, 1, 1)),
+        TimelineEntry("Chronic Disease Epidemiologist","State Dept. of Public Health",           datetime(2019, 2, 1),  None),
+    ],
+    screening_questions=[
+        "Walk me through the analytical approach you used for a complex surveillance dataset.",
+        "How do you communicate epidemiological findings to a non-technical audience, like a legislative committee?",
+    ],
+    screening_answers=[
+        (
+            "For the rural cardiovascular disparity study, I linked BRFSS microdata to county-"
+            "level USDA rural-urban continuum codes and CMS county-level expenditure data—"
+            "three datasets with different geographic identifiers and vintages, which required "
+            "careful harmonisation before any analysis. I built the pipeline in R using tidyverse "
+            "and survey package to account for BRFSS complex sampling design; ignoring the "
+            "design weights in a dataset like BRFSS inflates precision badly. I ran age-standardised "
+            "prevalence estimates by rurality quintile, then multilevel logistic regression with "
+            "county random effects to separate individual- from area-level variance. "
+            "Every analytical decision is documented in a methods memo so any reviewer can "
+            "reproduce the result without asking me."
+        ),
+        (
+            "I have one rule for non-technical presentations: one number per slide, and that "
+            "number needs a denominator the audience already understands. For a legislative "
+            "budget hearing on the diabetes prevention programme, I didn't show an odds ratio. "
+            "I showed that 1 in 8 adults in the state has diabetes, that the programme costs "
+            "$500 per participant, and that a one-percentage-point reduction in diabetes "
+            "prevalence saves the state's Medicaid programme an estimated $90 M per year. "
+            "Then I stopped talking and let the committee ask questions. The questions tell "
+            "you what they actually need to make a decision, and that's the most useful "
+            "epidemiology I can do."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 387.0,
+        "endorsement_reciprocity": 0.64,
+        "pubmed_publications": 11.0,
+        "h_index": 12.0,
+        "apha_presentation_verified": 1.0,
+        "github_public_repos": 6.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 40 ── "Chief People Officer" (FRAUD) ───────────────────────────
+# ===========================================================================
+p40 = LinkedInSyntheticProfile(
+    is_fraud=True,
+    jd_text=(
+        "Series C technology-enabled services company (~350 employees) seeks its first Chief "
+        "People Officer. Must have 10+ years of progressive HR leadership, demonstrated "
+        "experience building people infrastructure from scratch, and deep expertise in "
+        "compensation design, talent acquisition strategy, and organisational development. "
+        "M&A integration experience a strong plus."
+    ),
+    summary=(
+        "Transformational Chief People Officer and human capital strategist with a distinguished "
+        "track record of building world-class people functions and cultures that drive "
+        "exceptional business performance. Passionate architect of employee experiences that "
+        "attract, develop, and retain top talent at scale. Recognised thought leader in "
+        "organisational design, diversity & belonging, and the future of work. "
+        "Trusted strategic partner to CEOs and Boards navigating high-growth and transformation."
+    ),
+    experiences=[
+        {
+            "title": "Chief People Officer",
+            "org": "Luminary Growth Partners",
+            "description": (
+                "Built and led the people function for a high-growth organisation. Implemented "
+                "a comprehensive people strategy that transformed the employee experience and "
+                "significantly improved key talent metrics. Led the development of a values-driven "
+                "culture that became a powerful competitive advantage. Partnered with the CEO "
+                "and Board to align people strategy with business strategy. Drove diversity, "
+                "equity, and inclusion initiatives that received industry recognition."
+            ),
+        },
+        {
+            "title": "VP of Human Resources",
+            "org": "Crestfield Services Group",
+            "description": (
+                "Oversaw all aspects of HR for a multi-location services business. Designed "
+                "and implemented talent acquisition, performance management, and total rewards "
+                "programmes that supported rapid growth. Reduced regrettable attrition through "
+                "targeted engagement and development initiatives. Built and led a high-performing "
+                "HR team. Successfully supported two acquisitions with full HR integration."
+            ),
+        },
+        {
+            "title": "HR Business Partner",
+            "org": "Northgate Staffing Solutions",
+            "description": (
+                "Served as a strategic HR partner to business leaders across multiple functions. "
+                "Supported performance management, employee relations, and talent development "
+                "initiatives. Contributed to HR projects that meaningfully improved organisational "
+                "effectiveness. Recognised for strong relationship-building and business acumen."
+            ),
+        },
+    ],
+    skills=[
+        "Chief People Officer", "Talent Strategy", "Organisational Design", "Total Rewards",
+        "Diversity, Equity & Inclusion", "Culture Transformation", "M&A Integration",
+        "Executive Coaching", "HR Technology (Workday, Lattice)", "Succession Planning",
+        "Employee Engagement", "Leadership Development",
+    ],
+    timeline=[
+        # All tenures exactly 3 years; implausibly fast jump from HRBP to VP to CPO
+        TimelineEntry("HR Business Partner","Northgate Staffing Solutions", datetime(2015, 1, 1), datetime(2018, 1, 1)),
+        TimelineEntry("VP of Human Resources","Crestfield Services Group",  datetime(2018, 1, 1), datetime(2021, 1, 1)),
+        TimelineEntry("Chief People Officer", "Luminary Growth Partners",   datetime(2021, 1, 1), None),
+    ],
+    screening_questions=[
+        "How did you design a compensation structure to support a rapid headcount scale from 100 to 400 employees?",
+        "Tell me about an M&A integration you led and the people challenges you navigated.",
+    ],
+    screening_answers=[
+        (
+            "Compensation design at scale requires a strong philosophical foundation and "
+            "robust market data. I implemented a comprehensive total rewards strategy anchored "
+            "in our talent market positioning and business objectives. By establishing clear "
+            "job architecture and levelling frameworks, I enabled consistent, equitable, and "
+            "competitive compensation decisions that supported our growth trajectory. "
+            "The outcome was a highly effective compensation programme that significantly "
+            "improved our ability to attract and retain top talent during a critical growth phase."
+        ),
+        (
+            "M&A integration is fundamentally a people challenge, and I have led integrations "
+            "with a focus on cultural alignment, retention of key talent, and rapid harmonisation "
+            "of people programmes and systems. I take a structured, empathetic approach that "
+            "prioritises clear communication, leadership alignment, and early wins for employees "
+            "from both organisations. The integrations I have led have resulted in strong "
+            "cultural cohesion and talent retention well above typical M&A benchmarks."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 3400.0,
+        "endorsement_reciprocity": 0.06,
+        "shrm_certification_verified": 0.0,
+        "speaker_event_hits": 0.0,
+        "company_headcount_verifiable": 0.0,   # org not findable in LinkedIn / Crunchbase
+        "dei_award_verified": 0.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 41 ── "Director of Sustainability" (FRAUD) ─────────────────────
+# ===========================================================================
+p41 = LinkedInSyntheticProfile(
+    is_fraud=True,
+    jd_text=(
+        "Mid-size consumer goods manufacturer seeks a Director of Sustainability to own "
+        "Scope 1/2/3 emissions reporting, supplier ESG assessments, and the company's "
+        "2030 net-zero roadmap. Experience with GHG Protocol, CDP reporting, and science-"
+        "based targets (SBTi) required. Background in supply chain sustainability preferred."
+    ),
+    summary=(
+        "Purpose-driven Director of Sustainability with a proven track record of embedding "
+        "ESG excellence into corporate strategy and operations. Expert in developing and "
+        "executing ambitious sustainability roadmaps that deliver measurable environmental "
+        "impact and meaningful stakeholder value. Recognised thought leader in climate "
+        "action, circular economy, and responsible sourcing. Passionate about accelerating "
+        "the transition to a sustainable and equitable future through innovative, collaborative "
+        "business solutions."
+    ),
+    experiences=[
+        {
+            "title": "Director of Sustainability",
+            "org": "Verdant Consumer Brands",
+            "description": (
+                "Led the development and implementation of a comprehensive sustainability "
+                "strategy aligned with best-in-class ESG frameworks. Drove significant "
+                "reductions in the company's environmental footprint through targeted "
+                "initiatives across operations and supply chain. Established robust "
+                "sustainability reporting processes and achieved strong results on key "
+                "CDP and ESG indices. Built and engaged a high-performing sustainability "
+                "team and fostered a culture of environmental responsibility."
+            ),
+        },
+        {
+            "title": "Sustainability Manager",
+            "org": "Pinnacle Packaging Solutions",
+            "description": (
+                "Managed sustainability programmes across a multi-site manufacturing "
+                "operation. Developed and implemented initiatives that delivered measurable "
+                "improvements in energy, waste, and water performance. Supported supplier "
+                "engagement on responsible sourcing. Contributed to the company's first "
+                "sustainability report and CDP submission, receiving positive stakeholder "
+                "feedback and improved scores."
+            ),
+        },
+        {
+            "title": "Environmental Analyst",
+            "org": "Greenbridge Consulting",
+            "description": (
+                "Provided environmental and sustainability consulting services to corporate "
+                "clients. Conducted assessments and developed recommendations to improve "
+                "environmental performance. Supported clients with regulatory compliance "
+                "and sustainability reporting. Delivered impactful projects that enhanced "
+                "client environmental credentials."
+            ),
+        },
+    ],
+    skills=[
+        "GHG Protocol (Scope 1/2/3)", "CDP Reporting", "Science-Based Targets (SBTi)",
+        "ESG Strategy", "Supply Chain Sustainability", "Net-Zero Roadmaps",
+        "Circular Economy", "Sustainability Reporting (GRI / SASB)", "Stakeholder Engagement",
+        "Responsible Sourcing", "LCA (Life Cycle Assessment)", "Team Leadership",
+    ],
+    timeline=[
+        # Cookie-cutter 3-year tenures; no verifiable CDP scores, SBTi commitments, or emissions data
+        TimelineEntry("Environmental Analyst",   "Greenbridge Consulting",      datetime(2015, 6, 1), datetime(2018, 6, 1)),
+        TimelineEntry("Sustainability Manager",  "Pinnacle Packaging Solutions", datetime(2018, 6, 1), datetime(2021, 6, 1)),
+        TimelineEntry("Director of Sustainability","Verdant Consumer Brands",   datetime(2021, 6, 1), None),
+    ],
+    screening_questions=[
+        "Walk me through how you completed a Scope 3 inventory for a consumer goods company.",
+        "How did you set a science-based emissions target and get internal alignment on it?",
+    ],
+    screening_answers=[
+        (
+            "Scope 3 reporting is a complex undertaking that requires strong cross-functional "
+            "collaboration and robust data collection processes. I have built comprehensive "
+            "Scope 3 inventories using the GHG Protocol Corporate Value Chain Standard, "
+            "engaging suppliers and internal teams to gather the necessary activity data. "
+            "The result was a credible and defensible Scope 3 inventory that significantly "
+            "enhanced our CDP submission and provided a strong foundation for our net-zero "
+            "strategy and supplier engagement programme."
+        ),
+        (
+            "Setting science-based targets requires rigorous analysis and strong executive "
+            "sponsorship. I have led the end-to-end SBTi submission process, working with "
+            "technical teams to model emissions trajectories and identify the most impactful "
+            "reduction levers. I built internal alignment through a compelling business case "
+            "that connected our climate commitments to brand value, risk management, and "
+            "investor expectations. Our targets were validated by SBTi and received strong "
+            "recognition from key stakeholders including investors and customers."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 1870.0,
+        "endorsement_reciprocity": 0.08,
+        "sbti_commitment_verified": 0.0,    # no SBTi target findable under named org
+        "cdp_score_verified": 0.0,
+        "published_sustainability_report": 0.0,
+        "speaker_event_hits": 0.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
+ 
+# ===========================================================================
+# ── PROFILE 42 ── "Clinical Director, LMFT" (FRAUD) ────────────────────────
+# ===========================================================================
+p42 = LinkedInSyntheticProfile(
+    is_fraud=True,
+    jd_text=(
+        "Growing group therapy practice (18 clinicians, 3 locations) seeks a Clinical Director "
+        "with LMFT or LCSW licensure, 5+ years post-licensure experience, and demonstrated "
+        "supervisory and quality assurance leadership. Must have experience with EHR-based "
+        "documentation audits, clinical risk management, and payer credentialing."
+    ),
+    summary=(
+        "Compassionate and visionary Clinical Director and licensed Marriage and Family Therapist "
+        "with a proven history of building thriving clinical cultures and delivering transformative "
+        "mental health services. Expert in clinical supervision, quality assurance, and "
+        "evidence-based treatment across diverse populations. Committed to growing exceptional "
+        "clinical teams and creating healing environments where clients and clinicians flourish. "
+        "Deeply passionate about mental health equity and expanding access to quality care."
+    ),
+    experiences=[
+        {
+            "title": "Clinical Director",
+            "org": "Horizon Wellness Group",
+            "description": (
+                "Provide visionary clinical leadership for a growing multi-site group practice. "
+                "Built a comprehensive clinical quality programme that significantly elevated "
+                "clinical standards and outcomes. Developed and delivered clinical supervision "
+                "and training that empowered clinicians to achieve their highest potential. "
+                "Established key payer relationships and credentialing processes. "
+                "Cultivated a deeply collaborative, trauma-informed clinical culture."
+            ),
+        },
+        {
+            "title": "Lead Therapist / Clinical Supervisor",
+            "org": "Serenity Behavioral Health",
+            "description": (
+                "Provided individual, couples, and family therapy across a diverse caseload. "
+                "Delivered clinical supervision to associate therapists working toward licensure. "
+                "Contributed to quality improvement initiatives and programme development. "
+                "Played a key role in the practice's growth and clinical reputation. "
+                "Consistently received outstanding feedback from clients and colleagues."
+            ),
+        },
+        {
+            "title": "Associate Marriage and Family Therapist",
+            "org": "Clearwater Counseling Center",
+            "description": (
+                "Provided therapy services to individuals, couples, and families. "
+                "Accumulated supervised hours toward LMFT licensure. Participated in "
+                "case consultation and team meetings. Developed strong clinical skills "
+                "across a range of presenting concerns."
+            ),
+        },
+    ],
+    skills=[
+        "Clinical Supervision (LMFT-S)", "Quality Assurance", "Trauma-Informed Care",
+        "Individual, Couples & Family Therapy", "EHR Documentation", "Payer Credentialing",
+        "Risk Management", "Programme Development", "Staff Retention & Development",
+        "Evidence-Based Practice", "Team Leadership", "Mental Health Equity",
+    ],
+    timeline=[
+        # Timeline overlap: associate hours and lead therapist roles overlap by 5 months;
+        # 18-month gap between AMFT role end and lead role start unexplained
+        TimelineEntry("Associate MFT",              "Clearwater Counseling Center",datetime(2016, 9, 1),  datetime(2018, 11, 1)),
+        TimelineEntry("Lead Therapist / Supervisor","Serenity Behavioral Health",  datetime(2018, 6, 1),  datetime(2021, 4, 1)),
+        TimelineEntry("Clinical Director",           "Horizon Wellness Group",      datetime(2021, 5, 1),  None),
+    ],
+    screening_questions=[
+        "How do you structure a documentation audit process to catch clinical risk issues before they become complaints?",
+        "Describe how you handled a situation where a clinician's competence was in question.",
+    ],
+    screening_answers=[
+        (
+            "Clinical documentation quality is something I am deeply committed to, and I have "
+            "implemented robust audit processes that proactively identify and address any gaps. "
+            "I work collaboratively with clinicians to ensure documentation reflects the high "
+            "standard of care we deliver and meets all payer and regulatory requirements. "
+            "My quality programmes have consistently resulted in strong audit outcomes and "
+            "a culture where clinicians see documentation as an integral part of excellent "
+            "clinical practice."
+        ),
+        (
+            "Clinician competence concerns require a thoughtful, trauma-informed approach that "
+            "balances client safety with compassionate support for the clinician. I engage the "
+            "clinician in a private, supportive conversation and work collaboratively to understand "
+            "the factors affecting their performance. I develop a structured support plan with "
+            "clear milestones and provide ongoing supervision and resources. In the vast majority "
+            "of cases, this approach results in meaningful growth and a clinician who is stronger "
+            "for having navigated the challenge."
+        ),
+    ],
+    web_signals={
+        "linkedin_connections": 1640.0,
+        "endorsement_reciprocity": 0.07,
+        "lmft_license_verified": 0.0,       # license not findable in state BBS lookup
+        "supervisor_designation_verified": 0.0,
+        "practice_npi_verified": 0.0,
+        "speaker_event_hits": 0.0,
+    },
+    commit_history=CommitHistory(
+        commits=[],
+        repos=[]
+    )
+)
+ 
 
 # ===========================================================================
 # Collect all profiles
 # ===========================================================================
-ALL_PROFILES = [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12]
+ALL_PROFILES = [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p33, p34, p35, p36, p37, p38, p39, p40, p41, p42]
 
 PROFILE_META = [
     {"id": 1,  "persona": "Senior Software Engineer",        "is_fraud": p1.is_fraud},
@@ -1296,4 +2475,14 @@ PROFILE_META = [
     {"id": 10, "persona": "Enterprise Sales Director",       "is_fraud": p10.is_fraud},
     {"id": 11, "persona": "Supply Chain Manager",            "is_fraud": p11.is_fraud},
     {"id": 12, "persona": "Head of Data Engineering",        "is_fraud": p12.is_fraud},
+    {"id": 33, "persona": "Nonprofit Executive Director",         "is_fraud": p33.is_fraud},
+    {"id": 34, "persona": "Commercial Real Estate Broker",        "is_fraud": p34.is_fraud},
+    {"id": 35, "persona": "Speech-Language Pathologist (SLP)",    "is_fraud": p35.is_fraud},
+    {"id": 36, "persona": "Transportation Civil Engineer, P.E.",  "is_fraud": p36.is_fraud},
+    {"id": 37, "persona": "Hotel General Manager",                "is_fraud": p37.is_fraud},
+    {"id": 38, "persona": "Licensed Clinical Social Worker",      "is_fraud": p38.is_fraud},
+    {"id": 39, "persona": "Chronic Disease Epidemiologist",       "is_fraud": p39.is_fraud},
+    {"id": 40, "persona": "Chief People Officer",                 "is_fraud": p40.is_fraud},
+    {"id": 41, "persona": "Director of Sustainability",           "is_fraud": p41.is_fraud},
+    {"id": 42, "persona": "Clinical Director, LMFT",              "is_fraud": p42.is_fraud},
 ]
