@@ -9,23 +9,12 @@ Reward structure
 
 Stage mapping
 ──────────────
-  Stage 0 : profile signals only (always available)
-  Stage 1 : first screening question answered  (L1 surface)
-  Stage 2 : second screening question answered (L2 depth)
-  Stage 3 : cross-answer consistency signals
+  Stage 0 : first screening question answered  (L1 surface)
+  Stage 1 : second screening question answered (L2 depth)
+  Stage 2 : cross-answer consistency signals
+  Stage 3 : profile signals only
   Stage 4 : web/external verification (most expensive, revealed last) - Not implemented
 
-Feature dimensions
-───────────────────
-  Stage 0 profile    :  5 features
-  Stage 1 Q1 screen  :  4 features
-  Stage 2 Q2 depth   :  3 features
-  Stage 3 consistency:  2 features
-  Stage 4 web        :  3 features
-  ─────────────────────────────
-  Total features     : 17
-  Stage one-hot      :  5
-  Observation dim    : 22
 """
 
 import numpy as np
@@ -41,9 +30,11 @@ class CandidateEnv(gym.Env):
     # so the agent never pays a probe cost at stage 4.
     _PROBE_COSTS = {0: -0.05, 1: -0.08, 2: -0.10, 3: -0.15}
 
-    def __init__(self, signal_processor=None):
+    def __init__(self, signal_processor=None, *, debug: bool = True):
         super().__init__()
         self.signals = signal_processor
+        self.debug = debug
+        self._feature_cache = np.zeros(self.FEATURE_DIM, dtype=np.float32)
 
         # ── Observation space ──────────────────────────────────────────────
         # Shape: (17 features) + (5-dim stage one-hot) = 22 floats.
@@ -72,20 +63,31 @@ class CandidateEnv(gym.Env):
         """
         Gymnasium-compliant reset.
 
-        `seed` is forwarded to the parent to seed self.np_random (SB3
-        passes seeds automatically when using make_vec_env). Sampling
-        new candidates uses the CandidateGenerator's own RNG, which is
-        independent and set at construction time.
+        `seed` is forwarded to the parent to seed self.np_random. Stable-Baselines3
+        passes ``seed + env_index`` on the first reset of each sub-env so parallel
+        envs must not share a fixed profile RNG (see ``SignalProcessor.rng``).
 
         Returns
         -------
-        obs  : np.ndarray shape (22,)  — profile features + stage one-hot
+        obs  : np.ndarray shape (,)  — profile features + stage one-hot
         info : dict                    — empty at reset (required by Gymnasium)
         """
         super().reset(seed=seed)
+        if seed is not None:
+            self.signals.rng = np.random.default_rng(int(seed))
+        else:
+            # VecEnv clears seeds after each reset; derive a fresh stream from the env RNG.
+            self.signals.rng = np.random.default_rng(
+                int(self.np_random.integers(0, 2**31 - 1, dtype=np.int32))
+            )
         self.candidate = self.signals.random_profile()
         self.stage     = 0
         self.done      = False
+        self._build_feature_cache()
+        if self.debug:
+            print("--------------------------------")
+            print(self.candidate.summary)
+            print("--------------------------------")
         return self._obs(), {}
 
     # ── Step ───────────────────────────────────────────────────────────────
@@ -103,7 +105,7 @@ class CandidateEnv(gym.Env):
 
         Returns
         -------
-        obs        : np.ndarray shape (22,)
+        obs        : np.ndarray shape (,)
         reward     : float
         terminated : bool   — True when FLAG or PASS is chosen
         truncated  : bool   — always False (no time-limit truncation)
@@ -117,7 +119,7 @@ class CandidateEnv(gym.Env):
 
         reward     = 0.0
         terminated = False
-        is_fraud   = self.candidate["is_fraud"]
+        is_fraud   = self.candidate.is_fraud
         outcome    = None   # only set on terminal steps
 
         if action == 0:                                 # ── PROBE ──────────
@@ -165,51 +167,59 @@ class CandidateEnv(gym.Env):
         stage_oh[self.stage] = 1.0
         return np.concatenate([features, stage_oh])
 
-    def _revealed_features(self) -> np.ndarray:
-
-        out = np.zeros(self.FEATURE_DIM, dtype=np.float32)
+    def _build_feature_cache(self) -> None:
+        """
+        Run all signal stages once per episode. _revealed_features() only masks
+        by current stage — no repeated scoring on every observation.
+        """
         c = self.candidate
-        
-        # ── Stage 0: Profile signals ───────────────────────────────────────
+        cache = self._feature_cache
+        cache.fill(0.0)
+
         stage_zero = self.signals.stage_zero(c)
-        out[0] = stage_zero.get("coverage_score",          0.0)
-        out[1] = stage_zero.get("idiosyncrasy_score",     0.0)
-        out[2] = stage_zero.get("semantic_mirror_score",  0.0)
-        out[3] = stage_zero.get("timeline_coherence_fraud_score", 0.0)
-        out[4] = stage_zero.get("career_smoothness_fraud_score",      0.0)
-        out[5] = stage_zero.get("profile_voice_fraud_score",      0.0)
-        out[6] = stage_zero.get("soft_skill_mean_rate",      0.0)
-        out[7] = stage_zero.get("soft_skill_cv",      0.0)
-        out[8] = stage_zero.get("sentence_uniformity",      0.0)
-        out[9] = stage_zero.get("tech_density_cv",      0.0)
-        out[10] = stage_zero.get("voice_cluster_penalty",      0.0)
+        cache[0] = stage_zero.get("causal_span_score", 0.0)
+        cache[1] = stage_zero.get("result_entity_score", 0.0)
+        cache[2] = stage_zero.get("coherence_score", 0.0)
+        cache[3] = stage_zero.get("answer_perplexity_score", 0.0)
+        cache[4] = stage_zero.get("raw_perplexity", 0.0)
+        cache[5] = stage_zero.get("conditioned_perplexity", 0.0)
+        cache[6] = stage_zero.get("mean_log_prob", 0.0)
+        cache[7] = stage_zero.get("log_prob_cv", 0.0)
+        cache[8] = stage_zero.get("high_prob_token_fraction", 0.0)
+        cache[9] = stage_zero.get("low_prob_token_fraction", 0.0)
 
-        # ── Stage 1: First screening question (L1 surface) ────────────────
         stage_one = self.signals.stage_one(c)
-        if self.stage >= 1:
-            out[11] = stage_one.get("causal_span_score", 0.0)
-            out[12] = stage_one.get("result_entity_score",       0.0)
-            out[13] = stage_one.get("coherence_score", 0.0)
-            out[14] = stage_one.get("answer_perplexity_score",    0.0)
-            out[15] = stage_one.get("raw_perplexity",    0.0)
-            out[16] = stage_one.get("conditioned_perplexity",    0.0)
-            out[17] = stage_one.get("mean_log_prob",    0.0)
-            out[18] = stage_one.get("log_prob_cv",    0.0)
-            out[19] = stage_one.get("high_prob_token_fraction",    0.0)
-            out[20] = stage_one.get("low_prob_token_fraction",    0.0)
+        cache[10] = stage_one.get("depth_collapse_delta", 0.0)
 
-        # ── Stage 2: Deep follow-up question (L2) ─────────────────────────
         stage_two = self.signals.stage_two(c)
-        if self.stage >= 2:
-            out[21] = stage_two.get("depth_collapse_delta", 0.0)
+        cache[11] = stage_two.get("cross_answer_consistency_fraud_score", 0.0)
+        cache[12] = stage_two.get("combined_consistency_score", 0.0)
 
-        # ── Stage 3: Cross-answer consistency ─────────────────────────────
         stage_three = self.signals.stage_three(c)
+        cache[13] = stage_three.get("coverage_score", 0.0)
+        cache[14] = stage_three.get("idiosyncrasy_score", 0.0)
+        cache[15] = stage_three.get("semantic_mirror_score", 0.0)
+        cache[16] = stage_three.get("timeline_coherence_fraud_score", 0.0)
+        cache[17] = stage_three.get("career_smoothness_fraud_score", 0.0)
+        cache[18] = stage_three.get("profile_voice_fraud_score", 0.0)
+        cache[19] = stage_three.get("soft_skill_mean_rate", 0.0)
+        cache[20] = stage_three.get("soft_skill_cv", 0.0)
+        cache[21] = stage_three.get("sentence_uniformity", 0.0)
+        cache[22] = stage_three.get("tech_density_cv", 0.0)
+        cache[23] = stage_three.get("voice_cluster_penalty", 0.0)
+
+        # stage_four = self.signals.stage_four(c) Untested, Not implemented
+        # cache[24] = stage_four.get("github_archaeology_fraud_score", 0.0)
+
+    def _revealed_features(self) -> np.ndarray:
+        out = np.zeros(self.FEATURE_DIM, dtype=np.float32)
+        out[0:11] = self._feature_cache[0:11]
+        if self.stage >= 1:
+            out[11:21] = self._feature_cache[11:21]
+        if self.stage >= 2:
+            out[21] = self._feature_cache[21]
         if self.stage >= 3:
-            out[22] = stage_three.get("cross_answer_consistency_fraud_score", 0.0)
-            out[23] = stage_three.get("combined_consistency_score",          0.0)
-
-
+            out[22:24] = self._feature_cache[22:24]
         return out
 
     # ── Utilities ──────────────────────────────────────────────────────────
@@ -227,7 +237,7 @@ class CandidateEnv(gym.Env):
         """Human-readable state summary for interactive debugging."""
         c     = self.candidate
         stage = self._stage_name(self.stage)
-        fraud = c.get("is_fraud", "?")
+        fraud = getattr(c, "is_fraud", "?") if c is not None else "?"
         obs   = self._revealed_features()
 
         print(f"\n  Stage [{self.stage}] {stage}  |  is_fraud={fraud}")

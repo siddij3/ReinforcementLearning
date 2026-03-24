@@ -1,7 +1,25 @@
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import List
+from typing import Dict, List, Tuple
+
+_CACHED_LMS: Dict[str, Tuple[AutoTokenizer, AutoModelForCausalLM]] = {}
+
+
+def _load_causal_lm(model_name: str) -> Tuple[AutoTokenizer, AutoModelForCausalLM]:
+    if model_name in _CACHED_LMS:
+        return _CACHED_LMS[model_name]
+    try:
+        from .hub_auth import ensure_hf_token_for_downloads
+    except ImportError:
+        from hub_auth import ensure_hf_token_for_downloads
+    ensure_hf_token_for_downloads()
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    model.eval()
+    _CACHED_LMS[model_name] = (tokenizer, model)
+    return _CACHED_LMS[model_name]
+
 
 class AnswerPerplexityScorer:
     """
@@ -11,14 +29,7 @@ class AnswerPerplexityScorer:
     """
 
     def __init__(self, model_name: str = "distilgpt2"):
-        try:
-            from .hub_auth import ensure_hf_token_for_downloads
-        except ImportError:
-            from hub_auth import ensure_hf_token_for_downloads
-        ensure_hf_token_for_downloads()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model     = AutoModelForCausalLM.from_pretrained(model_name)
-        self.model.eval()
+        self.tokenizer, self.model = _load_causal_lm(model_name)
         # Baseline: median perplexity of known-genuine answers (calibrated offline)
         self.genuine_baseline_ppl = 120.0   # tune from your calibration corpus
         self.llm_baseline_ppl     = 35.0    # typical GPT-4 answer perplexity
