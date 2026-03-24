@@ -235,57 +235,57 @@ class StructuralOrganizationScorer:
         return f"naturally structured — consistent with genuine expert answer"
 
 
-# ── Usage ─────────────────────────────────────────────────────────
-scorer = StructuralOrganizationScorer()
+# # ── Usage ─────────────────────────────────────────────────────────
+# scorer = StructuralOrganizationScorer()
 
-# LLM-generated: textbook structure, perfect parallelism
-llm_answer = """
-To ensure model reliability in production, I implemented a comprehensive 
-monitoring strategy across three key dimensions:
+# # LLM-generated: textbook structure, perfect parallelism
+# llm_answer = """
+# To ensure model reliability in production, I implemented a comprehensive 
+# monitoring strategy across three key dimensions:
 
-1. Data quality monitoring: I configured Great Expectations to validate 
-   incoming feature distributions against baseline statistics, ensuring 
-   data drift was detected early.
+# 1. Data quality monitoring: I configured Great Expectations to validate 
+#    incoming feature distributions against baseline statistics, ensuring 
+#    data drift was detected early.
 
-2. Model performance monitoring: I leveraged Evidently AI to track 
-   prediction drift and established alerting thresholds for key metrics.
+# 2. Model performance monitoring: I leveraged Evidently AI to track 
+#    prediction drift and established alerting thresholds for key metrics.
 
-3. Infrastructure monitoring: I utilized Prometheus and Grafana to 
-   monitor system-level metrics, ensuring resource utilization remained 
-   within acceptable bounds.
+# 3. Infrastructure monitoring: I utilized Prometheus and Grafana to 
+#    monitor system-level metrics, ensuring resource utilization remained 
+#    within acceptable bounds.
 
-Additionally, I implemented automated retraining pipelines to address 
-model degradation proactively. Furthermore, I established comprehensive 
-logging practices to maintain auditability across the entire system.
-"""
+# Additionally, I implemented automated retraining pipelines to address 
+# model degradation proactively. Furthermore, I established comprehensive 
+# logging practices to maintain auditability across the entire system.
+# """
 
-# Human: asymmetric, self-correcting, dwells on the hard parts
-human_answer = """
-Honestly monitoring was the thing that bit us the hardest in year one.
-We had Prometheus set up but nobody was actually looking at it — or 
-actually wait, people were looking at it, they just didn't know what 
-to look for. The real problem was we had no baseline for what 
-"normal" prediction distribution looked like.
+# # Human: asymmetric, self-correcting, dwells on the hard parts
+# human_answer = """
+# Honestly monitoring was the thing that bit us the hardest in year one.
+# We had Prometheus set up but nobody was actually looking at it — or 
+# actually wait, people were looking at it, they just didn't know what 
+# to look for. The real problem was we had no baseline for what 
+# "normal" prediction distribution looked like.
 
-We eventually built something pretty scrappy — just logged the output 
-distribution of our ranking model to S3 every hour and compared it 
-to a rolling 7-day window. Nothing fancy. The fancy stuff (we tried 
-Evidently briefly) was harder to get buy-in on because the dashboards 
-didn't map to anything our product team understood.
+# We eventually built something pretty scrappy — just logged the output 
+# distribution of our ranking model to S3 every hour and compared it 
+# to a rolling 7-day window. Nothing fancy. The fancy stuff (we tried 
+# Evidently briefly) was harder to get buy-in on because the dashboards 
+# didn't map to anything our product team understood.
 
-Data drift we basically caught by accident — one of the feature 
-pipelines started returning nulls for about 0.3% of requests and 
-the model silently fell back to a prior. That took us three weeks 
-to notice. After that we added explicit null-rate alerts on every 
-feature. Boring but it works.
-"""
+# Data drift we basically caught by accident — one of the feature 
+# pipelines started returning nulls for about 0.3% of requests and 
+# the model silently fell back to a prior. That took us three weeks 
+# to notice. After that we added explicit null-rate alerts on every 
+# feature. Boring but it works.
+# """
 
-print(scorer.score(llm_answer, "hard"))
-# structural_over_organization_score: 0.81
-# — numbered lists, 3 parallel "I [verb]ed" constructions,
-#   transition phrases (Additionally, Furthermore), symmetric paragraphs
+# print(scorer.score(llm_answer, "hard"))
+# # structural_over_organization_score: 0.81
+# # — numbered lists, 3 parallel "I [verb]ed" constructions,
+# #   transition phrases (Additionally, Furthermore), symmetric paragraphs
 
-print(scorer.score(human_answer, "hard"))
-# structural_over_organization_score: 0.14
-# — self-corrections (actually wait, or actually), asymmetric paragraphs,
-#   no numbered lists, no transition phrases, dwells on failure
+# print(scorer.score(human_answer, "hard"))
+# # structural_over_organization_score: 0.14
+# # — self-corrections (actually wait, or actually), asymmetric paragraphs,
+# #   no numbered lists, no transition phrases, dwells on failure

@@ -171,7 +171,7 @@ class CandidateEnv(gym.Env):
         c = self.candidate
         
         # ── Stage 0: Profile signals ───────────────────────────────────────
-        stage_zero = self.stage_zero(c)
+        stage_zero = self.signals.stage_zero(c)
         out[0] = stage_zero.get("coverage_score",          0.0)
         out[1] = stage_zero.get("idiosyncrasy_score",     0.0)
         out[2] = stage_zero.get("semantic_mirror_score",  0.0)
@@ -185,7 +185,7 @@ class CandidateEnv(gym.Env):
         out[10] = stage_zero.get("voice_cluster_penalty",      0.0)
 
         # ── Stage 1: First screening question (L1 surface) ────────────────
-        stage_one = self.stage_one(c)
+        stage_one = self.signals.stage_one(c)
         if self.stage >= 1:
             out[11] = stage_one.get("causal_span_score", 0.0)
             out[12] = stage_one.get("result_entity_score",       0.0)
@@ -199,12 +199,12 @@ class CandidateEnv(gym.Env):
             out[20] = stage_one.get("low_prob_token_fraction",    0.0)
 
         # ── Stage 2: Deep follow-up question (L2) ─────────────────────────
-        stage_two = self.stage_two(c)
+        stage_two = self.signals.stage_two(c)
         if self.stage >= 2:
             out[21] = stage_two.get("depth_collapse_delta", 0.0)
 
         # ── Stage 3: Cross-answer consistency ─────────────────────────────
-        stage_three = self.stage_three(c)
+        stage_three = self.signals.stage_three(c)
         if self.stage >= 3:
             out[22] = stage_three.get("cross_answer_consistency_fraud_score", 0.0)
             out[23] = stage_three.get("combined_consistency_score",          0.0)

@@ -79,13 +79,11 @@ def _load(key: str):
 
 @dataclass
 class CausalityResult:
-    fraud_signal:           float   # 0 = rich narrative, 1 = keyword list
     causal_span_score:      float   # density of detected cause/effect spans
-    situation_score:        float   # zero-shot: describes a specific situation
-    specificity_score:      float   # zero-shot: concrete vs. vague language
+    # situation_score:        float   # zero-shot: describes a specific situation
+    # specificity_score:      float   # zero-shot: concrete vs. vague language
     result_entity_score:    float   # NER: quantities and outcomes present
     coherence_score:        float   # NLI: actions entail claimed outcomes
-    detail:                 dict    # per-model raw outputs
 
 
 # ── Main scorer ───────────────────────────────────────────────────────────────
@@ -172,11 +170,11 @@ class NarrativeCausalityScorer:
             causal_span_score     = round(causal_score, 4),
             result_entity_score   = round(result_score, 4),
             coherence_score       = round(coherence_score, 4),
-            detail = {
-                "causal":     causal_detail,
-                "ner":        ner_detail,
-                "nli":        nli_detail,
-            },
+            # detail = {
+            #     "causal":     causal_detail,
+            #     "ner":        ner_detail,
+            #     "nli":        nli_detail,
+            # },
         )
 
     # ── Signal implementations ────────────────────────────────────────────────
